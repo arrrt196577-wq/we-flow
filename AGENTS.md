@@ -44,6 +44,9 @@ mvn -pl we-flow-app -am clean package
 - Follow the existing module boundaries and code style.
 - Before changing code, inspect the relevant module `pom.xml`, package layout,
   and nearby implementations.
+- Existing database table structures are documented in
+  `introduction/database-schema.md`; read this file when database information is
+  needed.
 - Keep changes scoped to the requested behavior.
 - Avoid unrelated refactors.
 - Do not commit generated content such as `target/`, IDE metadata, or temporary
@@ -60,4 +63,3 @@ mvn -pl we-flow-app -am clean package
 - For cross-module changes, run `mvn clean test`.
 - For packaging or startup changes, run `mvn clean package` and verify the
   application startup path.
-

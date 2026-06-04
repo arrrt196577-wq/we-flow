@@ -9,7 +9,7 @@ import java.time.LocalDateTime;
 
 @Data
 @TableName("feedback")
-public class FeedbackEntity {
+public class Feedback {
 
     @TableId("feedback_id")
     private String feedbackId;

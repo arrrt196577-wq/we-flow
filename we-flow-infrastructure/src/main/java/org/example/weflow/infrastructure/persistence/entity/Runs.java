@@ -8,26 +8,29 @@ import lombok.Data;
 import java.time.LocalDateTime;
 
 @Data
-@TableName("threads_meta")
-public class ThreadMetaEntity {
+@TableName("runs")
+public class Runs {
 
-    @TableId("thread_id")
+    @TableId("run_id")
+    private String runId;
+
+    @TableField("thread_id")
     private String threadId;
 
     @TableField("user_id")
     private String userId;
 
-    @TableField("assistant_id")
-    private String assistantId;
-
-    @TableField("display_name")
-    private String displayName;
-
     @TableField("status")
     private String status;
 
+    @TableField("model_name")
+    private String modelName;
+
     @TableField("metadata_json")
     private String metadataJson;
+
+    @TableField("total_tokens")
+    private Integer totalTokens;
 
     @TableField("created_at")
     private LocalDateTime createdAt;

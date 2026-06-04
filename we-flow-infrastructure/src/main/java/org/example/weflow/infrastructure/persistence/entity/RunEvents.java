@@ -10,7 +10,7 @@ import java.time.LocalDateTime;
 
 @Data
 @TableName("run_events")
-public class RunEventEntity {
+public class RunEvents {
 
     @TableId(value = "id", type = IdType.AUTO)
     private Long id;
