@@ -9,6 +9,7 @@ repository.
 - Java version: 21.
 - Spring Boot version: 3.3.6.
 - Root module: `we-flow`.
+- Frontend code location: `F:\agent-project\we-flow-front`.
 - Modules:
   - `we-flow-common`
   - `we-flow-core`
