@@ -2,8 +2,11 @@ package org.example.weflow.api.controller;
 
 import jakarta.validation.Valid;
 import java.io.IOException;
+import java.util.List;
 import org.example.weflow.api.dto.ChatRequest;
 import org.example.weflow.core.service.IChatService;
+import org.example.weflow.core.service.dto.ChatHistoryMessage;
+import org.example.weflow.core.service.dto.ChatStreamRequest;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -26,13 +29,22 @@ public class ChatController {
         SseEmitter emitter = new SseEmitter(0L);
 
         chatService.stream(
-                request.message(),
+                toChatStreamRequest(request),
                 chunk -> sendChunk(emitter, chunk),
                 emitter::completeWithError,
                 emitter::complete
         );
 
         return emitter;
+    }
+
+    private ChatStreamRequest toChatStreamRequest(ChatRequest request) {
+        List<ChatHistoryMessage> history = request.history() == null
+                ? List.of()
+                : request.history().stream()
+                        .map(message -> new ChatHistoryMessage(message.role(), message.content()))
+                        .toList();
+        return new ChatStreamRequest(request.message(), request.conversationId(), history);
     }
 
     private void sendChunk(SseEmitter emitter, String chunk) {

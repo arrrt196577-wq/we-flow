@@ -23,8 +23,11 @@ public class Feedback {
     @TableField("user_id")
     private String userId;
 
+    @TableField("message_id")
+    private String messageId;
+
     @TableField("rating")
-    private Byte rating;
+    private Integer rating;
 
     @TableField("comment")
     private String comment;
