@@ -1,0 +1,20 @@
+package org.example.weflow.workflow.tool;
+
+import java.util.List;
+import org.bsc.langgraph4j.langchain4j.tool.LC4jToolService;
+import org.example.weflow.core.tool.AgentTool;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
+@Configuration(proxyBeanMethods = false)
+public class AgentToolConfiguration {
+
+    @Bean
+    @ConditionalOnMissingBean
+    public LC4jToolService lc4jToolService(List<AgentTool> tools) {
+        LC4jToolService.Builder builder = LC4jToolService.builder();
+        tools.forEach(builder::toolsFromObject);
+        return builder.build();
+    }
+}

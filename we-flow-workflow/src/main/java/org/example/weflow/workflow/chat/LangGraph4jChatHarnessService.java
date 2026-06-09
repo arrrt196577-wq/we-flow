@@ -24,6 +24,7 @@ public class LangGraph4jChatHarnessService implements IChatService {
     public void stream(ChatStreamRequest request, Consumer<String> onChunk, Consumer<Throwable> onError, Runnable onComplete) {
         try {
             String conversationId = requiredConversationId(request);
+            // invoke有3个重载
             ChatHarnessState finalState = graph.invoke(
                     Map.of(ChatHarnessState.CURRENT_USER_MESSAGE, request.message()),
                     RunnableConfig.builder()
