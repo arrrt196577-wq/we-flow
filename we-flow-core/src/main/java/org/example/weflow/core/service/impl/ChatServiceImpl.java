@@ -3,9 +3,11 @@ package org.example.weflow.core.service.impl;
 import dev.langchain4j.model.chat.StreamingChatModel;
 import dev.langchain4j.model.chat.request.ChatRequest;
 import dev.langchain4j.model.chat.response.ChatResponse;
+import dev.langchain4j.model.chat.response.PartialThinking;
 import dev.langchain4j.model.chat.response.StreamingChatResponseHandler;
 import java.util.function.Consumer;
 import org.example.weflow.core.service.IChatService;
+import org.example.weflow.core.service.dto.ChatStreamChunk;
 import org.example.weflow.core.service.dto.ChatStreamRequest;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
@@ -21,12 +23,17 @@ public class ChatServiceImpl implements IChatService {
     }
 
     @Override
-    public void stream(ChatStreamRequest request, Consumer<String> onChunk, Consumer<Throwable> onError, Runnable onComplete) {
+    public void stream(ChatStreamRequest request, Consumer<ChatStreamChunk> onChunk, Consumer<Throwable> onError, Runnable onComplete) {
         ChatRequest chatRequest = LangChain4jChatRequestMapper.toChatRequest(request);
         streamingChatModel.chat(chatRequest, new StreamingChatResponseHandler() {
             @Override
             public void onPartialResponse(String partialResponse) {
-                onChunk.accept(partialResponse);
+                onChunk.accept(ChatStreamChunk.content(partialResponse));
+            }
+
+            @Override
+            public void onPartialThinking(PartialThinking partialThinking) {
+                onChunk.accept(ChatStreamChunk.reasoning(partialThinking.text()));
             }
 
             @Override

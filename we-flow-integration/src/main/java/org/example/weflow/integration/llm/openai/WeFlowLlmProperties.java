@@ -29,7 +29,11 @@ public record WeFlowLlmProperties(
             String baseUrl,
             String apiKey,
             String modelName,
-            Double temperature
+            Double temperature,
+            String reasoningEffort,
+            Boolean returnThinking,
+            Boolean sendThinking,
+            String thinkingFieldName
     ) {
 
         void validateOpenAiCompatible(String providerName) {

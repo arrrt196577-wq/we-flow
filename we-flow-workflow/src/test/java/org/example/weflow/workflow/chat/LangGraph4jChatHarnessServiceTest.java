@@ -2,6 +2,8 @@ package org.example.weflow.workflow.chat;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import dev.langchain4j.agent.tool.P;
+import dev.langchain4j.agent.tool.Tool;
 import dev.langchain4j.agent.tool.ToolExecutionRequest;
 import dev.langchain4j.data.message.AiMessage;
 import dev.langchain4j.data.message.ChatMessage;
@@ -17,8 +19,10 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 import org.bsc.langgraph4j.langchain4j.tool.LC4jToolService;
-import org.example.weflow.core.tool.WorkspaceFileTools;
+import org.example.weflow.agent.tool.AgentTool;
+import org.example.weflow.agent.tool.WorkspaceFileTools;
 import org.example.weflow.core.service.IChatService;
+import org.example.weflow.core.service.dto.ChatStreamChunk;
 import org.example.weflow.core.service.dto.ChatStreamRequest;
 import org.example.weflow.core.service.impl.ChatServiceImpl;
 import org.example.weflow.core.workspace.DefaultWorkspaceService;
@@ -91,6 +95,46 @@ class LangGraph4jChatHarnessServiceTest {
     }
 
     @Test
+    void systemPromptShouldNotExposeWebSearchWhenToolIsUnavailable() {
+        RecordingChatModel chatModel = new RecordingChatModel();
+        LangGraph4jChatHarnessService service = service(chatModel);
+
+        stream(service, new ChatStreamRequest("联网查一下", "conversation-no-search-tool", null));
+
+        assertThat(systemPrompt(chatModel.requests().getFirst()))
+                .contains("Web search is not available")
+                .doesNotContain("web_search");
+    }
+
+    @Test
+    void systemPromptShouldExposeWebSearchWhenToolIsAvailable() {
+        RecordingChatModel chatModel = new RecordingChatModel();
+        LangGraph4jChatHarnessService service = service(chatModel, webSearchToolService("status: success\ntotalResults: 0\n"));
+
+        stream(service, new ChatStreamRequest("联网查一下", "conversation-search-tool", null));
+
+        assertThat(systemPrompt(chatModel.requests().getFirst()))
+                .contains("Use web_search")
+                .contains("include source links");
+    }
+
+    @Test
+    void emitsFinalThinkingBeforeAnswerContent() {
+        ToolCallingChatModel chatModel = new ToolCallingChatModel(List.of(AiMessage.builder()
+                .text("final answer")
+                .thinking("reasoning trail")
+                .build()));
+        LangGraph4jChatHarnessService service = service(chatModel);
+
+        List<ChatStreamChunk> chunks = streamChunks(service, new ChatStreamRequest("hello", "conversation-thinking", null));
+
+        assertThat(chunks).extracting(ChatStreamChunk::type)
+                .containsExactly(ChatStreamChunk.Type.REASONING, ChatStreamChunk.Type.CONTENT);
+        assertThat(chunks).extracting(ChatStreamChunk::content)
+                .containsExactly("reasoning trail", "final answer");
+    }
+
+    @Test
     void missingConversationIdReportsError() {
         LangGraph4jChatHarnessService service = service(new RecordingChatModel());
         AtomicReference<Throwable> error = new AtomicReference<>();
@@ -135,6 +179,73 @@ class LangGraph4jChatHarnessServiceTest {
     }
 
     @Test
+    void unsupportedWebSearchToolShouldReturnSearchDisabledMessage() {
+        ToolCallingChatModel chatModel = new ToolCallingChatModel(List.of(
+                AiMessage.from(toolRequest("tool-call-search", "web_search", "{\"query\":\"丹尼尔\"}"))
+        ));
+        LangGraph4jChatHarnessService service = service(chatModel);
+
+        String response = stream(service, new ChatStreamRequest("联网查一下丹尼尔", "conversation-search-disabled", null));
+
+        assertThat(response).contains("搜索功能未启用");
+        assertThat(chatModel.requests()).hasSize(1);
+    }
+
+    @Test
+    void unsupportedToolShouldReturnUnavailableToolMessage() {
+        ToolCallingChatModel chatModel = new ToolCallingChatModel(List.of(
+                AiMessage.from(toolRequest("tool-call-missing", "missing_tool", "{}"))
+        ));
+        LangGraph4jChatHarnessService service = service(chatModel);
+
+        String response = stream(service, new ChatStreamRequest("use missing tool", "conversation-missing-tool", null));
+
+        assertThat(response).contains("请求的工具不可用：missing_tool");
+        assertThat(chatModel.requests()).hasSize(1);
+    }
+
+    @Test
+    void webSearchErrorShouldStopBeforeSecondModelCall() {
+        ToolCallingChatModel chatModel = new ToolCallingChatModel(List.of(
+                AiMessage.from(toolRequest("tool-call-search", "web_search", "{\"query\":\"丹尼尔\"}"))
+        ));
+        LangGraph4jChatHarnessService service = service(chatModel, webSearchToolService("""
+                status: error
+                code: SEARCH_FAILED
+                message: DuckDuckGo search failed
+                """));
+
+        String response = stream(service, new ChatStreamRequest("联网查一下丹尼尔", "conversation-search-failed", null));
+
+        assertThat(response).contains("联网搜索失败：DuckDuckGo search failed");
+        assertThat(response).contains("不会继续生成联网结论");
+        assertThat(chatModel.requests()).hasSize(1);
+    }
+
+    @Test
+    void webSearchSuccessShouldSendToolResultBackToModel() {
+        ToolCallingChatModel chatModel = new ToolCallingChatModel(List.of(
+                AiMessage.from(toolRequest("tool-call-search", "web_search", "{\"query\":\"丹尼尔\"}")),
+                AiMessage.from("answer with source")
+        ));
+        LangGraph4jChatHarnessService service = service(chatModel, webSearchToolService("""
+                status: success
+                query: 丹尼尔
+                totalResults: 1
+                results:
+                1. title: Daniel
+                   url: https://example.com/daniel
+                   snippet: Daniel is a name.
+                """));
+
+        String response = stream(service, new ChatStreamRequest("联网查一下丹尼尔", "conversation-search-success", null));
+
+        assertThat(response).isEqualTo("answer with source");
+        assertThat(chatModel.requests()).hasSize(2);
+        assertThat(toolResultText(chatModel.requests().get(1))).contains("status: success", "https://example.com/daniel");
+    }
+
+    @Test
     void modelCanContinueReadingWhenReadFileHasMoreContent() throws IOException {
         Files.createDirectories(workspaceRoot.resolve("docs"));
         Files.writeString(workspaceRoot.resolve("docs/readme.md"), "one\ntwo\n", StandardCharsets.UTF_8);
@@ -170,15 +281,36 @@ class LangGraph4jChatHarnessServiceTest {
                 .build();
     }
 
+    private LC4jToolService webSearchToolService(String result) {
+        return LC4jToolService.builder()
+                .toolsFromObject(new TestWebSearchTool(result))
+                .build();
+    }
+
     private String stream(LangGraph4jChatHarnessService service, ChatStreamRequest request) {
         StringBuilder chunks = new StringBuilder();
         AtomicReference<Throwable> error = new AtomicReference<>();
 
-        service.stream(request, chunks::append, error::set, () -> {
+        service.stream(request, chunk -> {
+            if (chunk.type() == ChatStreamChunk.Type.CONTENT) {
+                chunks.append(chunk.content());
+            }
+        }, error::set, () -> {
         });
 
         assertThat(error.get()).isNull();
         return chunks.toString();
+    }
+
+    private List<ChatStreamChunk> streamChunks(LangGraph4jChatHarnessService service, ChatStreamRequest request) {
+        List<ChatStreamChunk> chunks = new ArrayList<>();
+        AtomicReference<Throwable> error = new AtomicReference<>();
+
+        service.stream(request, chunks::add, error::set, () -> {
+        });
+
+        assertThat(error.get()).isNull();
+        return chunks;
     }
 
     private ToolExecutionRequest toolRequest(String id, String name, String arguments) {
@@ -196,6 +328,29 @@ class LangGraph4jChatHarnessServiceTest {
                 .map(ToolExecutionResultMessage::text)
                 .reduce((left, right) -> left + "\n" + right)
                 .orElse("");
+    }
+
+    private String systemPrompt(ChatRequest request) {
+        return request.messages().stream()
+                .filter(SystemMessage.class::isInstance)
+                .map(SystemMessage.class::cast)
+                .map(SystemMessage::text)
+                .findFirst()
+                .orElse("");
+    }
+
+    private static final class TestWebSearchTool implements AgentTool {
+
+        private final String result;
+
+        private TestWebSearchTool(String result) {
+            this.result = result;
+        }
+
+        @Tool(name = "web_search", value = "Search the web for test data.")
+        public String webSearch(@P("Search query") String query) {
+            return result;
+        }
     }
 
     private static final class RecordingChatModel implements StreamingChatModel {

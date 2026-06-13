@@ -1,10 +1,9 @@
-package org.example.weflow.core.tool;
+package org.example.weflow.agent.tool;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 import dev.langchain4j.agent.tool.Tool;
 import java.io.IOException;
-import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -74,7 +73,8 @@ class WorkspaceFileToolsTest {
     void findFilesShouldMatchPartialPathOrFileName() throws IOException {
         WorkspaceFileTools tools = tools();
         Files.createDirectories(workspaceRoot.resolve("src/main/java"));
-        Files.writeString(workspaceRoot.resolve("src/main/java/ChatServiceImpl.java"), "class ChatServiceImpl {}", StandardCharsets.UTF_8);
+        Files.writeString(workspaceRoot.resolve("src/main/java/ChatServiceImpl.java"), "class ChatServiceImpl {}",
+                StandardCharsets.UTF_8);
         Files.writeString(workspaceRoot.resolve("src/main/java/Other.java"), "class Other {}", StandardCharsets.UTF_8);
 
         String result = tools.findFiles("ChatService", 10);

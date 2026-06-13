@@ -6,6 +6,7 @@ import java.util.List;
 import org.example.weflow.api.dto.ChatRequest;
 import org.example.weflow.core.service.IChatService;
 import org.example.weflow.core.service.dto.ChatHistoryMessage;
+import org.example.weflow.core.service.dto.ChatStreamChunk;
 import org.example.weflow.core.service.dto.ChatStreamRequest;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -42,14 +43,17 @@ public class ChatController {
         List<ChatHistoryMessage> history = request.history() == null
                 ? List.of()
                 : request.history().stream()
-                        .map(message -> new ChatHistoryMessage(message.role(), message.content()))
+                        .map(message -> new ChatHistoryMessage(
+                                message.role(),
+                                message.content(),
+                                message.reasoningContent()))
                         .toList();
         return new ChatStreamRequest(request.message(), request.conversationId(), history);
     }
 
-    private void sendChunk(SseEmitter emitter, String chunk) {
+    private void sendChunk(SseEmitter emitter, ChatStreamChunk chunk) {
         try {
-            emitter.send(SseEmitter.event().name("chunk").data(chunk));
+            emitter.send(SseEmitter.event().name(chunk.type().eventName()).data(chunk.content()));
         } catch (IOException e) {
             emitter.completeWithError(e);
         }

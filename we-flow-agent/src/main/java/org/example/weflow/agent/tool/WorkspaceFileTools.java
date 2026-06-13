@@ -1,4 +1,4 @@
-package org.example.weflow.core.tool;
+package org.example.weflow.agent.tool;
 
 import dev.langchain4j.agent.tool.P;
 import dev.langchain4j.agent.tool.Tool;

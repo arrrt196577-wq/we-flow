@@ -5,6 +5,7 @@ import java.util.function.Consumer;
 import org.bsc.langgraph4j.CompiledGraph;
 import org.bsc.langgraph4j.RunnableConfig;
 import org.example.weflow.core.service.IChatService;
+import org.example.weflow.core.service.dto.ChatStreamChunk;
 import org.example.weflow.core.service.dto.ChatStreamRequest;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
@@ -21,10 +22,9 @@ public class LangGraph4jChatHarnessService implements IChatService {
     }
 
     @Override
-    public void stream(ChatStreamRequest request, Consumer<String> onChunk, Consumer<Throwable> onError, Runnable onComplete) {
+    public void stream(ChatStreamRequest request, Consumer<ChatStreamChunk> onChunk, Consumer<Throwable> onError, Runnable onComplete) {
         try {
             String conversationId = requiredConversationId(request);
-            // invoke有3个重载
             ChatHarnessState finalState = graph.invoke(
                     Map.of(ChatHarnessState.CURRENT_USER_MESSAGE, request.message()),
                     RunnableConfig.builder()
@@ -32,7 +32,10 @@ public class LangGraph4jChatHarnessService implements IChatService {
                             .build()
             ).orElseThrow(() -> new IllegalStateException("LangGraph4j chat harness did not produce a final state."));
 
-            onChunk.accept(finalState.currentAssistantMessage());
+            if (StringUtils.hasText(finalState.currentAssistantThinking())) {
+                onChunk.accept(ChatStreamChunk.reasoning(finalState.currentAssistantThinking()));
+            }
+            onChunk.accept(ChatStreamChunk.content(finalState.currentAssistantMessage()));
             onComplete.run();
         } catch (Throwable throwable) {
             onError.accept(throwable);

@@ -8,6 +8,7 @@ public class ChatHarnessState extends MessagesState<ChatMessage> {
 
     static final String CURRENT_USER_MESSAGE = "currentUserMessage";
     static final String CURRENT_ASSISTANT_MESSAGE = "currentAssistantMessage";
+    static final String CURRENT_ASSISTANT_THINKING = "currentAssistantThinking";
     static final String TOOL_ITERATION_COUNT = "toolIterationCount";
 
     public ChatHarnessState(Map<String, Object> initData) {
@@ -20,6 +21,10 @@ public class ChatHarnessState extends MessagesState<ChatMessage> {
 
     public String currentAssistantMessage() {
         return this.<String>value(CURRENT_ASSISTANT_MESSAGE).orElse("");
+    }
+
+    public String currentAssistantThinking() {
+        return this.<String>value(CURRENT_ASSISTANT_THINKING).orElse("");
     }
 
     public int toolIterationCount() {
