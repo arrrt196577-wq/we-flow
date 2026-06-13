@@ -50,6 +50,8 @@ mvn -pl we-flow-app -am clean package
   needed.
 - Keep changes scoped to the requested behavior.
 - Avoid unrelated refactors.
+- When generating test code, avoid mock-based tests where practical; prefer
+  tests that exercise real behavior and integrations within reasonable scope.
 - Do not commit generated content such as `target/`, IDE metadata, or temporary
   files.
 - For cross-module dependency changes, check both the root `pom.xml` and the

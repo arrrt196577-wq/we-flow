@@ -33,9 +33,19 @@ final class LangChain4jChatRequestMapper {
         return switch (role) {
             case "system" -> SystemMessage.from(message.content());
             case "user" -> UserMessage.from(message.content());
-            case "assistant", "ai" -> AiMessage.from(message.content());
+            case "assistant", "ai" -> toAiMessage(message);
             default -> throw new IllegalArgumentException("Unsupported chat message role: " + message.role());
         };
+    }
+
+    private static AiMessage toAiMessage(ChatHistoryMessage message) {
+        if (!hasText(message.reasoningContent())) {
+            return AiMessage.from(message.content());
+        }
+        return AiMessage.builder()
+                .text(message.content())
+                .thinking(message.reasoningContent())
+                .build();
     }
 
     private static String normalizeRole(String role) {
@@ -43,5 +53,9 @@ final class LangChain4jChatRequestMapper {
             throw new IllegalArgumentException("Unsupported chat message role: null");
         }
         return role.trim().toLowerCase(Locale.ROOT);
+    }
+
+    private static boolean hasText(String value) {
+        return value != null && !value.isBlank();
     }
 }

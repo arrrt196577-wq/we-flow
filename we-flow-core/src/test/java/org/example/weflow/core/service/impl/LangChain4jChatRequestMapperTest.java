@@ -84,6 +84,22 @@ class LangChain4jChatRequestMapperTest {
     }
 
     @Test
+    void assistantReasoningContentMapsToAiMessageThinking() {
+        ChatStreamRequest request = new ChatStreamRequest(
+                "current",
+                null,
+                List.of(new ChatHistoryMessage("assistant", "previous answer", "previous reasoning"))
+        );
+
+        ChatRequest chatRequest = LangChain4jChatRequestMapper.toChatRequest(request);
+
+        assertThat(chatRequest.messages().get(0)).isInstanceOf(AiMessage.class);
+        AiMessage aiMessage = (AiMessage) chatRequest.messages().get(0);
+        assertThat(aiMessage.text()).isEqualTo("previous answer");
+        assertThat(aiMessage.thinking()).isEqualTo("previous reasoning");
+    }
+
+    @Test
     void unsupportedRoleThrowsIllegalArgumentException() {
         ChatStreamRequest request = new ChatStreamRequest(
                 "current",
