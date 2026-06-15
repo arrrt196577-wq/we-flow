@@ -51,6 +51,7 @@ final class ChatHarnessGraphFactory {
     private static final String CONTINUE = "continue";
     private static final int MAX_TOOL_ITERATIONS = 8;
     private static final String WEB_SEARCH_TOOL = "web_search";
+    private static final String DELEGATE_TASK_TOOL = "delegate_task";
 
     private final StreamingChatModel streamingChatModel;
     private final LC4jToolService toolService;
@@ -180,6 +181,14 @@ final class ChatHarnessGraphFactory {
             prompt.append("""
                     Web search is not available in this session.
                     If the user asks you to search the web, browse, look up current information, or verify latest external facts, say that search is not enabled and do not invent sources or citations.
+                    """);
+        }
+
+        if (toolNames.contains(DELEGATE_TASK_TOOL)) {
+            prompt.append("""
+                    Use delegate_task only when the user request contains an independent task that should be handled by a subagent.
+                    For phase one, the only available subagent code is simple_task_subagent.
+                    Do not invent other subagent codes.
                     """);
         }
 

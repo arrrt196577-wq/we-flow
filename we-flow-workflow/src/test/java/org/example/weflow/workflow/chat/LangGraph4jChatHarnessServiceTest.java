@@ -19,7 +19,10 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 import org.bsc.langgraph4j.langchain4j.tool.LC4jToolService;
+import org.example.weflow.agent.subagent.InMemorySubAgentRegistry;
+import org.example.weflow.agent.subagent.SimpleTaskSubAgentExecutor;
 import org.example.weflow.agent.tool.AgentTool;
+import org.example.weflow.agent.tool.TaskDelegationTool;
 import org.example.weflow.agent.tool.WorkspaceFileTools;
 import org.example.weflow.core.service.IChatService;
 import org.example.weflow.core.service.dto.ChatStreamChunk;
@@ -116,6 +119,31 @@ class LangGraph4jChatHarnessServiceTest {
         assertThat(systemPrompt(chatModel.requests().getFirst()))
                 .contains("Use web_search")
                 .contains("include source links");
+    }
+
+    @Test
+    void systemPromptShouldNotExposeDelegateTaskWhenToolIsUnavailable() {
+        RecordingChatModel chatModel = new RecordingChatModel();
+        LangGraph4jChatHarnessService service = service(chatModel);
+
+        stream(service, new ChatStreamRequest("delegate work", "conversation-no-delegate-tool", null));
+
+        assertThat(systemPrompt(chatModel.requests().getFirst()))
+                .doesNotContain("delegate_task")
+                .doesNotContain("simple_task_subagent");
+    }
+
+    @Test
+    void systemPromptShouldExposeDelegateTaskWhenToolIsAvailable() {
+        RecordingChatModel chatModel = new RecordingChatModel();
+        LangGraph4jChatHarnessService service = service(chatModel, delegateTaskToolService());
+
+        stream(service, new ChatStreamRequest("delegate work", "conversation-delegate-tool", null));
+
+        assertThat(systemPrompt(chatModel.requests().getFirst()))
+                .contains("Use delegate_task")
+                .contains("simple_task_subagent")
+                .contains("Do not invent other subagent codes");
     }
 
     @Test
@@ -246,6 +274,26 @@ class LangGraph4jChatHarnessServiceTest {
     }
 
     @Test
+    void delegateTaskSuccessShouldSendToolResultBackToModel() {
+        ToolCallingChatModel chatModel = new ToolCallingChatModel(List.of(
+                AiMessage.from(toolRequest("tool-call-delegate", "delegate_task",
+                        "{\"subAgentCode\":\"simple_task_subagent\",\"taskType\":\"general_task\","
+                                + "\"objective\":\"verify delegation\",\"input\":\"abc\"}")),
+                AiMessage.from("delegated response")
+        ));
+        LangGraph4jChatHarnessService service = service(chatModel, delegateTaskToolService());
+
+        String response = stream(service, new ChatStreamRequest("delegate this", "conversation-delegate-success", null));
+
+        assertThat(response).isEqualTo("delegated response");
+        assertThat(chatModel.requests()).hasSize(2);
+        assertThat(toolResultText(chatModel.requests().get(1)))
+                .contains("status: success")
+                .contains("subAgent: simple_task_subagent")
+                .contains("output: accepted task");
+    }
+
+    @Test
     void modelCanContinueReadingWhenReadFileHasMoreContent() throws IOException {
         Files.createDirectories(workspaceRoot.resolve("docs"));
         Files.writeString(workspaceRoot.resolve("docs/readme.md"), "one\ntwo\n", StandardCharsets.UTF_8);
@@ -284,6 +332,14 @@ class LangGraph4jChatHarnessServiceTest {
     private LC4jToolService webSearchToolService(String result) {
         return LC4jToolService.builder()
                 .toolsFromObject(new TestWebSearchTool(result))
+                .build();
+    }
+
+    private LC4jToolService delegateTaskToolService() {
+        return LC4jToolService.builder()
+                .toolsFromObject(new TaskDelegationTool(new InMemorySubAgentRegistry(List.of(
+                        new SimpleTaskSubAgentExecutor()
+                ))))
                 .build();
     }
 
