@@ -27,7 +27,7 @@ public class TaskDelegationTool implements AgentTool {
 
     @Tool(name = "delegate_task", value = "Delegate an independent task to a registered subagent.")
     public String delegateTask(
-            @P("Registered subagent code. For phase one use simple_task_subagent.") String subAgentCode,
+            @P("Registered subagent code from the available subagent list.") String subAgentCode,
             @P("Task type, for example general_task.") String taskType,
             @P("Clear objective for the subagent.") String objective,
             @P(value = "Task input as plain text or a JSON string.", required = false) String input

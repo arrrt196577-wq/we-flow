@@ -15,27 +15,38 @@ import dev.langchain4j.model.chat.request.ChatRequest;
 import dev.langchain4j.model.chat.response.ChatResponse;
 import dev.langchain4j.model.chat.response.StreamingChatResponseHandler;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.Collectors;
 import org.bsc.langgraph4j.langchain4j.tool.LC4jToolService;
 import org.example.weflow.agent.subagent.InMemorySubAgentRegistry;
-import org.example.weflow.agent.subagent.SimpleTaskSubAgentExecutor;
 import org.example.weflow.agent.tool.AgentTool;
 import org.example.weflow.agent.tool.TaskDelegationTool;
 import org.example.weflow.agent.tool.WorkspaceFileTools;
+import org.example.weflow.core.agent.AgentContext;
+import org.example.weflow.core.agent.AgentDefinition;
+import org.example.weflow.core.agent.AgentExecutor;
+import org.example.weflow.core.agent.AgentResult;
+import org.example.weflow.core.agent.AgentTask;
+import org.example.weflow.core.agent.AgentType;
 import org.example.weflow.core.service.IChatService;
 import org.example.weflow.core.service.dto.ChatStreamChunk;
 import org.example.weflow.core.service.dto.ChatStreamRequest;
 import org.example.weflow.core.service.impl.ChatServiceImpl;
 import org.example.weflow.core.workspace.DefaultWorkspaceService;
 import org.example.weflow.core.workspace.WorkspaceProperties;
+import org.example.weflow.workflow.agent.AgentGraphFactory;
+import org.example.weflow.workflow.agent.DefaultAgentSpecs;
+import org.example.weflow.workflow.agent.GraphBackedAgentExecutor;
+import org.example.weflow.workflow.agent.ImplementPlaceholderAgentExecutor;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Path;
 
 class LangGraph4jChatHarnessServiceTest {
 
@@ -136,14 +147,17 @@ class LangGraph4jChatHarnessServiceTest {
     @Test
     void systemPromptShouldExposeDelegateTaskWhenToolIsAvailable() {
         RecordingChatModel chatModel = new RecordingChatModel();
-        LangGraph4jChatHarnessService service = service(chatModel, delegateTaskToolService());
+        List<AgentExecutor> subAgents = defaultSubAgents();
+        LangGraph4jChatHarnessService service = service(chatModel, delegateTaskToolService(subAgents), subAgents);
 
         stream(service, new ChatStreamRequest("delegate work", "conversation-delegate-tool", null));
 
         assertThat(systemPrompt(chatModel.requests().getFirst()))
                 .contains("Use delegate_task")
-                .contains("simple_task_subagent")
-                .contains("Do not invent other subagent codes");
+                .contains("search_agent")
+                .contains("implement_agent")
+                .contains("Do not invent other subagent codes")
+                .doesNotContain("simple_task_subagent");
     }
 
     @Test
@@ -277,11 +291,12 @@ class LangGraph4jChatHarnessServiceTest {
     void delegateTaskSuccessShouldSendToolResultBackToModel() {
         ToolCallingChatModel chatModel = new ToolCallingChatModel(List.of(
                 AiMessage.from(toolRequest("tool-call-delegate", "delegate_task",
-                        "{\"subAgentCode\":\"simple_task_subagent\",\"taskType\":\"general_task\","
+                        "{\"subAgentCode\":\"search_agent\",\"taskType\":\"general_task\","
                                 + "\"objective\":\"verify delegation\",\"input\":\"abc\"}")),
                 AiMessage.from("delegated response")
         ));
-        LangGraph4jChatHarnessService service = service(chatModel, delegateTaskToolService());
+        List<AgentExecutor> subAgents = defaultSubAgents();
+        LangGraph4jChatHarnessService service = service(chatModel, delegateTaskToolService(subAgents), subAgents);
 
         String response = stream(service, new ChatStreamRequest("delegate this", "conversation-delegate-success", null));
 
@@ -289,8 +304,53 @@ class LangGraph4jChatHarnessServiceTest {
         assertThat(chatModel.requests()).hasSize(2);
         assertThat(toolResultText(chatModel.requests().get(1)))
                 .contains("status: success")
-                .contains("subAgent: simple_task_subagent")
-                .contains("output: accepted task");
+                .contains("subAgent: search_agent")
+                .contains("output: search agent output");
+    }
+
+    @Test
+    void delegateTaskToImplementAgentShouldReturnPlaceholderError() {
+        ToolCallingChatModel chatModel = new ToolCallingChatModel(List.of(
+                AiMessage.from(toolRequest("tool-call-implement", "delegate_task",
+                        "{\"subAgentCode\":\"implement_agent\",\"taskType\":\"implementation\","
+                                + "\"objective\":\"edit files\",\"input\":\"{}\"}")),
+                AiMessage.from("implementation unavailable")
+        ));
+        List<AgentExecutor> subAgents = defaultSubAgents();
+        LangGraph4jChatHarnessService service = service(chatModel, delegateTaskToolService(subAgents), subAgents);
+
+        String response = stream(service, new ChatStreamRequest("delegate implementation", "conversation-implement-placeholder", null));
+
+        assertThat(response).isEqualTo("implementation unavailable");
+        assertThat(toolResultText(chatModel.requests().get(1)))
+                .contains("status: error")
+                .contains("subAgent: implement_agent")
+                .contains("code: IMPLEMENT_AGENT_NOT_ENABLED")
+                .contains("尚未启用执行能力");
+    }
+
+    @Test
+    void searchAgentShouldSeeOnlySearchAndReadOnlyFileTools() {
+        RecordingChatModel chatModel = new RecordingChatModel();
+        LC4jToolService toolService = LC4jToolService.builder()
+                .toolsFromObject(new WorkspaceFileTools(
+                        new DefaultWorkspaceService(new WorkspaceProperties(workspaceRoot.toString()))))
+                .toolsFromObject(new TestWebSearchTool("status: success\ntotalResults: 0\n"))
+                .toolsFromObject(new TaskDelegationTool(new InMemorySubAgentRegistry(defaultSubAgents())))
+                .build();
+        AgentExecutor searchAgent = new GraphBackedAgentExecutor(
+                DefaultAgentSpecs.searchAgentSpec(),
+                new AgentGraphFactory(chatModel, toolService)
+        );
+
+        AgentResult result = searchAgent.execute(
+                new AgentTask("search-task-1", "research", "inspect workspace", ""),
+                new AgentContext("lead_agent")
+        );
+
+        assertThat(result.output()).contains("call-1 messages=user:");
+        assertThat(toolNames(chatModel.requests().getFirst()))
+                .containsExactlyInAnyOrder("find_files", "read_file", "list_dir", "web_search");
     }
 
     @Test
@@ -319,7 +379,23 @@ class LangGraph4jChatHarnessServiceTest {
     }
 
     private LangGraph4jChatHarnessService service(StreamingChatModel chatModel, LC4jToolService toolService) {
-        return new LangGraph4jChatHarnessService(new ChatHarnessGraphFactory(chatModel, toolService));
+        return service(chatModel, toolService, List.of());
+    }
+
+    private LangGraph4jChatHarnessService service(
+            StreamingChatModel chatModel,
+            LC4jToolService toolService,
+            List<AgentExecutor> subAgents
+    ) {
+        return new LangGraph4jChatHarnessService(
+                new AgentGraphFactory(chatModel, toolService),
+                DefaultAgentSpecs.leadAgentSpec(
+                        subAgents.stream()
+                                .map(AgentExecutor::definition)
+                                .toList(),
+                        toolNames(toolService)
+                )
+        );
     }
 
     private LC4jToolService fileToolService() {
@@ -335,12 +411,31 @@ class LangGraph4jChatHarnessServiceTest {
                 .build();
     }
 
-    private LC4jToolService delegateTaskToolService() {
+    private LC4jToolService delegateTaskToolService(List<AgentExecutor> subAgents) {
         return LC4jToolService.builder()
-                .toolsFromObject(new TaskDelegationTool(new InMemorySubAgentRegistry(List.of(
-                        new SimpleTaskSubAgentExecutor()
-                ))))
+                .toolsFromObject(new TaskDelegationTool(new InMemorySubAgentRegistry(subAgents)))
                 .build();
+    }
+
+    private List<AgentExecutor> defaultSubAgents() {
+        return List.of(
+                successfulSubAgent(DefaultAgentSpecs.SEARCH_AGENT_CODE, "search agent output"),
+                new ImplementPlaceholderAgentExecutor()
+        );
+    }
+
+    private AgentExecutor successfulSubAgent(String code, String output) {
+        return new AgentExecutor() {
+            @Override
+            public AgentDefinition definition() {
+                return new AgentDefinition(code, code, AgentType.SUB, "test subagent", true);
+            }
+
+            @Override
+            public AgentResult execute(AgentTask task, AgentContext context) {
+                return AgentResult.success(task.taskId(), code, output);
+            }
+        };
     }
 
     private String stream(LangGraph4jChatHarnessService service, ChatStreamRequest request) {
@@ -393,6 +488,18 @@ class LangGraph4jChatHarnessServiceTest {
                 .map(SystemMessage::text)
                 .findFirst()
                 .orElse("");
+    }
+
+    private Set<String> toolNames(LC4jToolService toolService) {
+        return toolService.toolSpecifications().stream()
+                .map(specification -> specification.name())
+                .collect(Collectors.toSet());
+    }
+
+    private Set<String> toolNames(ChatRequest request) {
+        return request.toolSpecifications().stream()
+                .map(specification -> specification.name())
+                .collect(Collectors.toSet());
     }
 
     private static final class TestWebSearchTool implements AgentTool {

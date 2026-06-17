@@ -6,10 +6,10 @@ import org.bsc.langgraph4j.prebuilt.MessagesState;
 
 public class ChatHarnessState extends MessagesState<ChatMessage> {
 
-    static final String CURRENT_USER_MESSAGE = "currentUserMessage";
-    static final String CURRENT_ASSISTANT_MESSAGE = "currentAssistantMessage";
-    static final String CURRENT_ASSISTANT_THINKING = "currentAssistantThinking";
-    static final String TOOL_ITERATION_COUNT = "toolIterationCount";
+    public static final String CURRENT_USER_MESSAGE = "currentUserMessage";
+    public static final String CURRENT_ASSISTANT_MESSAGE = "currentAssistantMessage";
+    public static final String CURRENT_ASSISTANT_THINKING = "currentAssistantThinking";
+    public static final String TOOL_ITERATION_COUNT = "toolIterationCount";
 
     public ChatHarnessState(Map<String, Object> initData) {
         super(initData);

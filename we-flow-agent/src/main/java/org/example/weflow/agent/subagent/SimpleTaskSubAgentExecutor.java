@@ -6,9 +6,7 @@ import org.example.weflow.core.agent.AgentExecutor;
 import org.example.weflow.core.agent.AgentResult;
 import org.example.weflow.core.agent.AgentTask;
 import org.example.weflow.core.agent.AgentType;
-import org.springframework.stereotype.Component;
 
-@Component
 public class SimpleTaskSubAgentExecutor implements AgentExecutor {
 
     public static final String CODE = "simple_task_subagent";

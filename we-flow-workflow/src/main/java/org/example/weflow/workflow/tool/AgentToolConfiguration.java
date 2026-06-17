@@ -17,7 +17,6 @@ public class AgentToolConfiguration {
     @ConditionalOnMissingBean
     public LC4jToolService lc4jToolService(List<AgentTool> tools) {
         LC4jToolService.Builder builder = LC4jToolService.builder();
-        // Scan @Tool methods and extract tool names, descriptions, and parameter schemas.
         tools.forEach(builder::toolsFromObject);
         return builder.build();
     }

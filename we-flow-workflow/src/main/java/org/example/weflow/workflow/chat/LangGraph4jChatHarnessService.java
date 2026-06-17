@@ -4,9 +4,12 @@ import java.util.Map;
 import java.util.function.Consumer;
 import org.bsc.langgraph4j.CompiledGraph;
 import org.bsc.langgraph4j.RunnableConfig;
+import org.example.weflow.core.agent.AgentSpec;
 import org.example.weflow.core.service.IChatService;
 import org.example.weflow.core.service.dto.ChatStreamChunk;
 import org.example.weflow.core.service.dto.ChatStreamRequest;
+import org.example.weflow.workflow.agent.AgentGraphFactory;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
@@ -17,8 +20,11 @@ public class LangGraph4jChatHarnessService implements IChatService {
 
     private final CompiledGraph<ChatHarnessState> graph;
 
-    public LangGraph4jChatHarnessService(ChatHarnessGraphFactory graphFactory) {
-        this.graph = graphFactory.create();
+    public LangGraph4jChatHarnessService(
+            AgentGraphFactory graphFactory,
+            @Qualifier("leadAgentSpec") AgentSpec leadAgentSpec
+    ) {
+        this.graph = graphFactory.create(leadAgentSpec);
     }
 
     @Override
