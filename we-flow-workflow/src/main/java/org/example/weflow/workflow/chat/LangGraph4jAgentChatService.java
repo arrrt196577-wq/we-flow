@@ -9,6 +9,7 @@ import org.example.weflow.core.service.IChatService;
 import org.example.weflow.core.service.dto.ChatStreamChunk;
 import org.example.weflow.core.service.dto.ChatStreamRequest;
 import org.example.weflow.workflow.agent.AgentGraphFactory;
+import org.example.weflow.workflow.agent.AgentThreadState;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
@@ -16,11 +17,11 @@ import org.springframework.util.StringUtils;
 
 @Service
 @ConditionalOnProperty(prefix = "we-flow.chat", name = "engine", havingValue = "langgraph4j")
-public class LangGraph4jChatHarnessService implements IChatService {
+public class LangGraph4jAgentChatService implements IChatService {
 
-    private final CompiledGraph<ChatHarnessState> graph;
+    private final CompiledGraph<AgentThreadState> graph;
 
-    public LangGraph4jChatHarnessService(
+    public LangGraph4jAgentChatService(
             AgentGraphFactory graphFactory,
             @Qualifier("leadAgentSpec") AgentSpec leadAgentSpec
     ) {
@@ -31,12 +32,12 @@ public class LangGraph4jChatHarnessService implements IChatService {
     public void stream(ChatStreamRequest request, Consumer<ChatStreamChunk> onChunk, Consumer<Throwable> onError, Runnable onComplete) {
         try {
             String conversationId = requiredConversationId(request);
-            ChatHarnessState finalState = graph.invoke(
-                    Map.of(ChatHarnessState.CURRENT_USER_MESSAGE, request.message()),
+            AgentThreadState finalState = graph.invoke(
+                    Map.of(AgentThreadState.CURRENT_USER_MESSAGE, request.message()),
                     RunnableConfig.builder()
                             .threadId(conversationId)
                             .build()
-            ).orElseThrow(() -> new IllegalStateException("LangGraph4j chat harness did not produce a final state."));
+            ).orElseThrow(() -> new IllegalStateException("LangGraph4j agent chat graph did not produce a final state."));
 
             if (StringUtils.hasText(finalState.currentAssistantThinking())) {
                 onChunk.accept(ChatStreamChunk.reasoning(finalState.currentAssistantThinking()));

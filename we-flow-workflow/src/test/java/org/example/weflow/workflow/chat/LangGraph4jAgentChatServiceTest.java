@@ -18,6 +18,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
@@ -48,7 +49,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 
-class LangGraph4jChatHarnessServiceTest {
+class LangGraph4jAgentChatServiceTest {
 
     @TempDir
     Path workspaceRoot;
@@ -58,8 +59,8 @@ class LangGraph4jChatHarnessServiceTest {
             .withBean(LC4jToolService.class, () -> LC4jToolService.builder().build())
             .withUserConfiguration(
                     ChatServiceImpl.class,
-                    LangGraph4jChatHarnessConfiguration.class,
-                    LangGraph4jChatHarnessService.class
+                    LangGraph4jAgentRuntimeConfiguration.class,
+                    LangGraph4jAgentChatService.class
             );
 
     @Test
@@ -71,19 +72,19 @@ class LangGraph4jChatHarnessServiceTest {
     }
 
     @Test
-    void langGraph4jEngineUsesHarnessService() {
+    void langGraph4jEngineUsesAgentChatService() {
         contextRunner
                 .withPropertyValues("we-flow.chat.engine=langgraph4j")
                 .run(context -> assertThat(context)
                         .hasSingleBean(IChatService.class)
                         .getBean(IChatService.class)
-                        .isInstanceOf(LangGraph4jChatHarnessService.class));
+                        .isInstanceOf(LangGraph4jAgentChatService.class));
     }
 
     @Test
     void sameConversationIdRestoresPreviousCheckpointMessages() {
         RecordingChatModel chatModel = new RecordingChatModel();
-        LangGraph4jChatHarnessService service = service(chatModel);
+        LangGraph4jAgentChatService service = service(chatModel);
 
         String first = stream(service, new ChatStreamRequest("my name is zhang san", "conversation-1", null));
         String second = stream(service, new ChatStreamRequest("what is my name?", "conversation-1", null));
@@ -98,7 +99,7 @@ class LangGraph4jChatHarnessServiceTest {
     @Test
     void differentConversationIdsDoNotShareCheckpointMessages() {
         RecordingChatModel chatModel = new RecordingChatModel();
-        LangGraph4jChatHarnessService service = service(chatModel);
+        LangGraph4jAgentChatService service = service(chatModel);
 
         stream(service, new ChatStreamRequest("my name is zhang san", "conversation-1", null));
         String isolated = stream(service, new ChatStreamRequest("what is my name?", "conversation-2", null));
@@ -111,7 +112,7 @@ class LangGraph4jChatHarnessServiceTest {
     @Test
     void systemPromptShouldNotExposeWebSearchWhenToolIsUnavailable() {
         RecordingChatModel chatModel = new RecordingChatModel();
-        LangGraph4jChatHarnessService service = service(chatModel);
+        LangGraph4jAgentChatService service = service(chatModel);
 
         stream(service, new ChatStreamRequest("联网查一下", "conversation-no-search-tool", null));
 
@@ -123,7 +124,7 @@ class LangGraph4jChatHarnessServiceTest {
     @Test
     void systemPromptShouldExposeWebSearchWhenToolIsAvailable() {
         RecordingChatModel chatModel = new RecordingChatModel();
-        LangGraph4jChatHarnessService service = service(chatModel, webSearchToolService("status: success\ntotalResults: 0\n"));
+        LangGraph4jAgentChatService service = service(chatModel, webSearchToolService("status: success\ntotalResults: 0\n"));
 
         stream(service, new ChatStreamRequest("联网查一下", "conversation-search-tool", null));
 
@@ -135,7 +136,7 @@ class LangGraph4jChatHarnessServiceTest {
     @Test
     void systemPromptShouldNotExposeDelegateTaskWhenToolIsUnavailable() {
         RecordingChatModel chatModel = new RecordingChatModel();
-        LangGraph4jChatHarnessService service = service(chatModel);
+        LangGraph4jAgentChatService service = service(chatModel);
 
         stream(service, new ChatStreamRequest("delegate work", "conversation-no-delegate-tool", null));
 
@@ -148,12 +149,16 @@ class LangGraph4jChatHarnessServiceTest {
     void systemPromptShouldExposeDelegateTaskWhenToolIsAvailable() {
         RecordingChatModel chatModel = new RecordingChatModel();
         List<AgentExecutor> subAgents = defaultSubAgents();
-        LangGraph4jChatHarnessService service = service(chatModel, delegateTaskToolService(subAgents), subAgents);
+        LangGraph4jAgentChatService service = service(chatModel, delegateTaskToolService(subAgents), subAgents);
 
         stream(service, new ChatStreamRequest("delegate work", "conversation-delegate-tool", null));
 
         assertThat(systemPrompt(chatModel.requests().getFirst()))
                 .contains("Use delegate_task")
+                .contains("Default to handling simple tasks yourself")
+                .contains("Do NOT use delegate_task for")
+                .contains("Simple, single-step operations")
+                .contains("Multiple dependent steps")
                 .contains("search_agent")
                 .contains("implement_agent")
                 .contains("Do not invent other subagent codes")
@@ -166,7 +171,7 @@ class LangGraph4jChatHarnessServiceTest {
                 .text("final answer")
                 .thinking("reasoning trail")
                 .build()));
-        LangGraph4jChatHarnessService service = service(chatModel);
+        LangGraph4jAgentChatService service = service(chatModel);
 
         List<ChatStreamChunk> chunks = streamChunks(service, new ChatStreamRequest("hello", "conversation-thinking", null));
 
@@ -178,7 +183,7 @@ class LangGraph4jChatHarnessServiceTest {
 
     @Test
     void missingConversationIdReportsError() {
-        LangGraph4jChatHarnessService service = service(new RecordingChatModel());
+        LangGraph4jAgentChatService service = service(new RecordingChatModel());
         AtomicReference<Throwable> error = new AtomicReference<>();
 
         service.stream(
@@ -204,7 +209,7 @@ class LangGraph4jChatHarnessServiceTest {
                         "{\"path\":\"docs/readme.md\",\"startLine\":1,\"maxLines\":10}")),
                 AiMessage.from("file says hello")
         ));
-        LangGraph4jChatHarnessService service = service(chatModel, fileToolService());
+        LangGraph4jAgentChatService service = service(chatModel, fileToolService());
 
         String response = stream(service, new ChatStreamRequest("read docs/readme.md", "conversation-tools", null));
 
@@ -225,7 +230,7 @@ class LangGraph4jChatHarnessServiceTest {
         ToolCallingChatModel chatModel = new ToolCallingChatModel(List.of(
                 AiMessage.from(toolRequest("tool-call-search", "web_search", "{\"query\":\"丹尼尔\"}"))
         ));
-        LangGraph4jChatHarnessService service = service(chatModel);
+        LangGraph4jAgentChatService service = service(chatModel);
 
         String response = stream(service, new ChatStreamRequest("联网查一下丹尼尔", "conversation-search-disabled", null));
 
@@ -238,7 +243,7 @@ class LangGraph4jChatHarnessServiceTest {
         ToolCallingChatModel chatModel = new ToolCallingChatModel(List.of(
                 AiMessage.from(toolRequest("tool-call-missing", "missing_tool", "{}"))
         ));
-        LangGraph4jChatHarnessService service = service(chatModel);
+        LangGraph4jAgentChatService service = service(chatModel);
 
         String response = stream(service, new ChatStreamRequest("use missing tool", "conversation-missing-tool", null));
 
@@ -251,7 +256,7 @@ class LangGraph4jChatHarnessServiceTest {
         ToolCallingChatModel chatModel = new ToolCallingChatModel(List.of(
                 AiMessage.from(toolRequest("tool-call-search", "web_search", "{\"query\":\"丹尼尔\"}"))
         ));
-        LangGraph4jChatHarnessService service = service(chatModel, webSearchToolService("""
+        LangGraph4jAgentChatService service = service(chatModel, webSearchToolService("""
                 status: error
                 code: SEARCH_FAILED
                 message: DuckDuckGo search failed
@@ -270,7 +275,7 @@ class LangGraph4jChatHarnessServiceTest {
                 AiMessage.from(toolRequest("tool-call-search", "web_search", "{\"query\":\"丹尼尔\"}")),
                 AiMessage.from("answer with source")
         ));
-        LangGraph4jChatHarnessService service = service(chatModel, webSearchToolService("""
+        LangGraph4jAgentChatService service = service(chatModel, webSearchToolService("""
                 status: success
                 query: 丹尼尔
                 totalResults: 1
@@ -296,7 +301,7 @@ class LangGraph4jChatHarnessServiceTest {
                 AiMessage.from("delegated response")
         ));
         List<AgentExecutor> subAgents = defaultSubAgents();
-        LangGraph4jChatHarnessService service = service(chatModel, delegateTaskToolService(subAgents), subAgents);
+        LangGraph4jAgentChatService service = service(chatModel, delegateTaskToolService(subAgents), subAgents);
 
         String response = stream(service, new ChatStreamRequest("delegate this", "conversation-delegate-success", null));
 
@@ -305,7 +310,10 @@ class LangGraph4jChatHarnessServiceTest {
         assertThat(toolResultText(chatModel.requests().get(1)))
                 .contains("status: success")
                 .contains("subAgent: search_agent")
-                .contains("output: search agent output");
+                .contains("traceId:")
+                .contains("startedAt:")
+                .contains("completedAt:")
+                .contains("result:\nsearch agent output");
     }
 
     @Test
@@ -317,7 +325,7 @@ class LangGraph4jChatHarnessServiceTest {
                 AiMessage.from("implementation unavailable")
         ));
         List<AgentExecutor> subAgents = defaultSubAgents();
-        LangGraph4jChatHarnessService service = service(chatModel, delegateTaskToolService(subAgents), subAgents);
+        LangGraph4jAgentChatService service = service(chatModel, delegateTaskToolService(subAgents), subAgents);
 
         String response = stream(service, new ChatStreamRequest("delegate implementation", "conversation-implement-placeholder", null));
 
@@ -325,7 +333,10 @@ class LangGraph4jChatHarnessServiceTest {
         assertThat(toolResultText(chatModel.requests().get(1)))
                 .contains("status: error")
                 .contains("subAgent: implement_agent")
+                .contains("traceId:")
                 .contains("code: IMPLEMENT_AGENT_NOT_ENABLED")
+                .contains("startedAt:")
+                .contains("completedAt:")
                 .contains("尚未启用执行能力");
     }
 
@@ -345,12 +356,20 @@ class LangGraph4jChatHarnessServiceTest {
 
         AgentResult result = searchAgent.execute(
                 new AgentTask("search-task-1", "research", "inspect workspace", ""),
-                new AgentContext("lead_agent")
+                new AgentContext("lead_agent", "trace-search-test")
         );
 
         assertThat(result.output()).contains("call-1 messages=user:");
+        assertThat(result.traceId()).isEqualTo("trace-search-test");
+        assertThat(result.startedAt()).isNotNull();
+        assertThat(result.completedAt()).isNotNull();
         assertThat(toolNames(chatModel.requests().getFirst()))
                 .containsExactlyInAnyOrder("find_files", "read_file", "list_dir", "web_search");
+        assertThat(systemPrompt(chatModel.requests().getFirst()))
+                .contains("read-only research subagent")
+                .contains("Do NOT ask for clarification")
+                .contains("Recommended next steps for the lead agent")
+                .contains("Citations: Use `[citation:Title](URL)` format");
     }
 
     @Test
@@ -364,7 +383,7 @@ class LangGraph4jChatHarnessServiceTest {
                         "{\"path\":\"docs/readme.md\",\"startLine\":2,\"maxLines\":1}")),
                 AiMessage.from("read both chunks")
         ));
-        LangGraph4jChatHarnessService service = service(chatModel, fileToolService());
+        LangGraph4jAgentChatService service = service(chatModel, fileToolService());
 
         String response = stream(service, new ChatStreamRequest("read docs/readme.md", "conversation-more", null));
 
@@ -374,20 +393,20 @@ class LangGraph4jChatHarnessServiceTest {
         assertThat(toolResultText(chatModel.requests().get(2))).contains("1 | one", "2 | two");
     }
 
-    private LangGraph4jChatHarnessService service(StreamingChatModel chatModel) {
+    private LangGraph4jAgentChatService service(StreamingChatModel chatModel) {
         return service(chatModel, LC4jToolService.builder().build());
     }
 
-    private LangGraph4jChatHarnessService service(StreamingChatModel chatModel, LC4jToolService toolService) {
+    private LangGraph4jAgentChatService service(StreamingChatModel chatModel, LC4jToolService toolService) {
         return service(chatModel, toolService, List.of());
     }
 
-    private LangGraph4jChatHarnessService service(
+    private LangGraph4jAgentChatService service(
             StreamingChatModel chatModel,
             LC4jToolService toolService,
             List<AgentExecutor> subAgents
     ) {
-        return new LangGraph4jChatHarnessService(
+        return new LangGraph4jAgentChatService(
                 new AgentGraphFactory(chatModel, toolService),
                 DefaultAgentSpecs.leadAgentSpec(
                         subAgents.stream()
@@ -433,12 +452,13 @@ class LangGraph4jChatHarnessServiceTest {
 
             @Override
             public AgentResult execute(AgentTask task, AgentContext context) {
-                return AgentResult.success(task.taskId(), code, output);
+                Instant startedAt = Instant.now();
+                return AgentResult.success(task.taskId(), context.traceId(), code, output, startedAt, Instant.now());
             }
         };
     }
 
-    private String stream(LangGraph4jChatHarnessService service, ChatStreamRequest request) {
+    private String stream(LangGraph4jAgentChatService service, ChatStreamRequest request) {
         StringBuilder chunks = new StringBuilder();
         AtomicReference<Throwable> error = new AtomicReference<>();
 
@@ -453,7 +473,7 @@ class LangGraph4jChatHarnessServiceTest {
         return chunks.toString();
     }
 
-    private List<ChatStreamChunk> streamChunks(LangGraph4jChatHarnessService service, ChatStreamRequest request) {
+    private List<ChatStreamChunk> streamChunks(LangGraph4jAgentChatService service, ChatStreamRequest request) {
         List<ChatStreamChunk> chunks = new ArrayList<>();
         AtomicReference<Throwable> error = new AtomicReference<>();
 

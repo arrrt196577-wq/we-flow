@@ -2,6 +2,7 @@ package org.example.weflow.agent.tool;
 
 import dev.langchain4j.agent.tool.P;
 import dev.langchain4j.agent.tool.Tool;
+import java.time.Instant;
 import java.util.UUID;
 import org.example.weflow.agent.subagent.SubAgentRegistry;
 import org.example.weflow.core.agent.AgentContext;
@@ -32,57 +33,99 @@ public class TaskDelegationTool implements AgentTool {
             @P("Clear objective for the subagent.") String objective,
             @P(value = "Task input as plain text or a JSON string.", required = false) String input
     ) {
+        String taskId = UUID.randomUUID().toString();
+        String traceId = UUID.randomUUID().toString();
+        Instant startedAt = Instant.now();
         if (!StringUtils.hasText(subAgentCode)) {
-            return error("INVALID_ARGUMENT", "subAgentCode must not be blank");
+            return error(taskId, traceId, null, "INVALID_ARGUMENT", "subAgentCode must not be blank", startedAt);
         }
         if (!StringUtils.hasText(taskType)) {
-            return error("INVALID_ARGUMENT", "taskType must not be blank");
+            return error(taskId, traceId, subAgentCode, "INVALID_ARGUMENT", "taskType must not be blank", startedAt);
         }
         if (!StringUtils.hasText(objective)) {
-            return error("INVALID_ARGUMENT", "objective must not be blank");
+            return error(taskId, traceId, subAgentCode, "INVALID_ARGUMENT", "objective must not be blank", startedAt);
         }
 
-        String taskId = UUID.randomUUID().toString();
         AgentExecutor subAgent = subAgentRegistry.findByCode(subAgentCode)
                 .orElse(null);
         if (subAgent == null) {
-            return "status: error\n"
-                    + "taskId: " + taskId + "\n"
-                    + "code: SUB_AGENT_NOT_FOUND\n"
-                    + "message: subagent not found: " + sanitize(subAgentCode) + "\n";
+            return error(taskId, traceId, subAgentCode, "SUB_AGENT_NOT_FOUND",
+                    "subagent not found: " + sanitize(subAgentCode), startedAt);
         }
 
         AgentTask task = new AgentTask(taskId, taskType.trim(), objective.trim(), input == null ? "" : input);
         AgentResult result;
         try {
-            result = subAgent.execute(task, new AgentContext(LEAD_AGENT_CODE));
+            result = subAgent.execute(task, new AgentContext(LEAD_AGENT_CODE, traceId));
         } catch (RuntimeException e) {
-            return "status: error\n"
-                    + "taskId: " + taskId + "\n"
-                    + "subAgent: " + sanitize(subAgentCode) + "\n"
-                    + "code: SUB_AGENT_EXECUTION_FAILED\n"
-                    + "message: " + sanitize(e.getMessage()) + "\n";
+            return error(taskId, traceId, subAgentCode, "SUB_AGENT_EXECUTION_FAILED",
+                    safeBlock(e.getMessage()), startedAt);
         }
 
         if (result.status() != AgentStatus.SUCCESS) {
-            return "status: error\n"
-                    + "taskId: " + taskId + "\n"
-                    + "subAgent: " + sanitize(result.agentCode()) + "\n"
-                    + "code: " + sanitize(result.errorCode()) + "\n"
-                    + "message: " + sanitize(result.errorMessage()) + "\n";
+            return error(result.taskId(), result.traceId(), result.agentCode(), result.errorCode(),
+                    result.errorMessage(), result.startedAt(), result.completedAt());
         }
 
         return "status: success\n"
                 + "taskId: " + sanitize(result.taskId()) + "\n"
+                + "traceId: " + sanitize(result.traceId()) + "\n"
                 + "subAgent: " + sanitize(result.agentCode()) + "\n"
                 + "taskType: " + sanitize(task.taskType()) + "\n"
-                + "output: " + sanitize(result.output()) + "\n";
+                + "startedAt: " + result.startedAt() + "\n"
+                + "completedAt: " + result.completedAt() + "\n"
+                + "result:\n"
+                + safeBlock(result.output()) + "\n";
+    }
+
+    private String error(
+            String taskId,
+            String traceId,
+            String subAgentCode,
+            String code,
+            String message,
+            Instant startedAt
+    ) {
+        return error(taskId, traceId, subAgentCode, code, message, startedAt, Instant.now());
+    }
+
+    private String error(
+            String taskId,
+            String traceId,
+            String subAgentCode,
+            String code,
+            String message,
+            Instant startedAt,
+            Instant completedAt
+    ) {
+        StringBuilder result = new StringBuilder()
+                .append("status: error\n")
+                .append("taskId: ").append(sanitize(taskId)).append('\n')
+                .append("traceId: ").append(sanitize(traceId)).append('\n');
+        if (StringUtils.hasText(subAgentCode)) {
+            result.append("subAgent: ").append(sanitize(subAgentCode)).append('\n');
+        }
+        return result
+                .append("code: ").append(sanitize(code)).append('\n')
+                .append("startedAt: ").append(startedAt).append('\n')
+                .append("completedAt: ").append(completedAt).append('\n')
+                .append("message:\n")
+                .append(safeBlock(message)).append('\n')
+                .toString();
     }
 
     private String error(String code, String message) {
-        return "status: error\n"
-                + "code: " + code + "\n"
-                + "message: " + sanitize(message) + "\n";
+        String taskId = UUID.randomUUID().toString();
+        String traceId = UUID.randomUUID().toString();
+        Instant startedAt = Instant.now();
+        return error(taskId, traceId, null, code, message, startedAt, startedAt);
+    }
+
+    private String safeBlock(String value) {
+        if (value == null) {
+            return "";
+        }
+        return value.replace("\r\n", "\n").replace('\r', '\n').trim();
     }
 
     private String sanitize(String value) {

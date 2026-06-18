@@ -39,7 +39,6 @@ import org.bsc.langgraph4j.langchain4j.serializer.std.LC4jStateSerializer;
 import org.bsc.langgraph4j.langchain4j.tool.LC4jToolService;
 import org.bsc.langgraph4j.prebuilt.MessagesState;
 import org.example.weflow.core.agent.AgentSpec;
-import org.example.weflow.workflow.chat.ChatHarnessState;
 
 @Slf4j
 public class AgentGraphFactory {
@@ -61,12 +60,12 @@ public class AgentGraphFactory {
         this.toolService = toolService;
     }
 
-    public CompiledGraph<ChatHarnessState> create(AgentSpec spec) {
+    public CompiledGraph<AgentThreadState> create(AgentSpec spec) {
         try {
             GraphRuntime runtime = new GraphRuntime(spec);
-            StateGraph<ChatHarnessState> graph = new StateGraph<>(
+            StateGraph<AgentThreadState> graph = new StateGraph<>(
                     MessagesState.SCHEMA,
-                    new LC4jStateSerializer<>(ChatHarnessState::new)
+                    new LC4jStateSerializer<>(AgentThreadState::new)
             );
 
             graph.addNode(TURN_INITIALIZATION_NODE, node_async(runtime::initializeTurn))
@@ -100,15 +99,15 @@ public class AgentGraphFactory {
             this.spec = spec;
         }
 
-        private Map<String, Object> initializeTurn(ChatHarnessState state) {
+        private Map<String, Object> initializeTurn(AgentThreadState state) {
             return Map.of(
                     MessagesState.MESSAGES_STATE, List.of(UserMessage.from(state.currentUserMessage())),
-                    ChatHarnessState.CURRENT_ASSISTANT_THINKING, "",
-                    ChatHarnessState.TOOL_ITERATION_COUNT, 0
+                    AgentThreadState.CURRENT_ASSISTANT_THINKING, "",
+                    AgentThreadState.TOOL_ITERATION_COUNT, 0
             );
         }
 
-        private Map<String, Object> modelNode(ChatHarnessState state) {
+        private Map<String, Object> modelNode(AgentThreadState state) {
             log.info("[{} modelNode] messages count: {}", spec.definition().code(), state.messages().size());
             ChatRequest chatRequest = ChatRequest.builder()
                     .messages(messagesForModel(state.messages()))
@@ -117,12 +116,12 @@ public class AgentGraphFactory {
             AiMessage aiMessage = chat(chatRequest);
             return Map.of(
                     MessagesState.MESSAGES_STATE, List.of(aiMessage),
-                    ChatHarnessState.CURRENT_ASSISTANT_MESSAGE, assistantText(aiMessage),
-                    ChatHarnessState.CURRENT_ASSISTANT_THINKING, assistantThinking(aiMessage)
+                    AgentThreadState.CURRENT_ASSISTANT_MESSAGE, assistantText(aiMessage),
+                    AgentThreadState.CURRENT_ASSISTANT_THINKING, assistantThinking(aiMessage)
             );
         }
 
-        private Command routeAfterModel(ChatHarnessState state, RunnableConfig config) {
+        private Command routeAfterModel(AgentThreadState state, RunnableConfig config) {
             return lastAiMessage(state)
                     .filter(AiMessage::hasToolExecutionRequests)
                     .map(aiMessage -> {
@@ -139,13 +138,13 @@ public class AgentGraphFactory {
                     .orElseGet(() -> new Command(FINISH));
         }
 
-        private Command routeAfterTool(ChatHarnessState state, RunnableConfig config) {
+        private Command routeAfterTool(AgentThreadState state, RunnableConfig config) {
             return searchFailureMessage(state.messages())
                     .map(this::finishCommand)
                     .orElseGet(() -> new Command(CONTINUE));
         }
 
-        private Map<String, Object> toolNode(ChatHarnessState state) {
+        private Map<String, Object> toolNode(AgentThreadState state) {
             AiMessage aiMessage = lastAiMessage(state)
                     .filter(AiMessage::hasToolExecutionRequests)
                     .orElseThrow(() -> new IllegalStateException("Tool node requires an AI message with tool requests."));
@@ -153,7 +152,7 @@ public class AgentGraphFactory {
             Command command = toolService.execute(toolRequests, invocationContext(state), MessagesState.MESSAGES_STATE).join();
             return Map.of(
                     MessagesState.MESSAGES_STATE, toolResultMessages(command),
-                    ChatHarnessState.TOOL_ITERATION_COUNT, state.toolIterationCount() + 1
+                    AgentThreadState.TOOL_ITERATION_COUNT, state.toolIterationCount() + 1
             );
         }
 
@@ -178,7 +177,7 @@ public class AgentGraphFactory {
                     .collect(Collectors.toUnmodifiableSet());
         }
 
-        private java.util.Optional<AiMessage> lastAiMessage(ChatHarnessState state) {
+        private java.util.Optional<AiMessage> lastAiMessage(AgentThreadState state) {
             List<ChatMessage> messages = state.messages();
             for (int i = messages.size() - 1; i >= 0; i--) {
                 if (messages.get(i) instanceof AiMessage aiMessage) {
@@ -188,7 +187,7 @@ public class AgentGraphFactory {
             return java.util.Optional.empty();
         }
 
-        private InvocationContext invocationContext(ChatHarnessState state) {
+        private InvocationContext invocationContext(AgentThreadState state) {
             return InvocationContext.builder()
                     .invocationId(UUID.randomUUID())
                     .interfaceName(AgentGraphFactory.class.getSimpleName())
@@ -293,8 +292,8 @@ public class AgentGraphFactory {
 
         private Command finishCommand(String message) {
             return new Command(FINISH, Map.of(
-                    ChatHarnessState.CURRENT_ASSISTANT_MESSAGE, message,
-                    ChatHarnessState.CURRENT_ASSISTANT_THINKING, "",
+                    AgentThreadState.CURRENT_ASSISTANT_MESSAGE, message,
+                    AgentThreadState.CURRENT_ASSISTANT_THINKING, "",
                     MessagesState.MESSAGES_STATE, List.of(AiMessage.from(message))
             ));
         }

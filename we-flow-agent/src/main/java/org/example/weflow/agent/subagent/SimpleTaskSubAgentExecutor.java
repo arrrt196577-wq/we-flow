@@ -1,5 +1,6 @@
 package org.example.weflow.agent.subagent;
 
+import java.time.Instant;
 import org.example.weflow.core.agent.AgentContext;
 import org.example.weflow.core.agent.AgentDefinition;
 import org.example.weflow.core.agent.AgentExecutor;
@@ -26,12 +27,14 @@ public class SimpleTaskSubAgentExecutor implements AgentExecutor {
 
     @Override
     public AgentResult execute(AgentTask task, AgentContext context) {
+        Instant startedAt = Instant.now();
         String output = "accepted task"
                 + "; parentAgentCode=" + safe(context == null ? null : context.parentAgentCode())
                 + "; taskType=" + safe(task.taskType())
                 + "; objective=" + safe(task.objective())
                 + "; input=" + safe(task.input());
-        return AgentResult.success(task.taskId(), CODE, output);
+        return AgentResult.success(task.taskId(), context == null ? null : context.traceId(),
+                CODE, output, startedAt, Instant.now());
     }
 
     private String safe(String value) {

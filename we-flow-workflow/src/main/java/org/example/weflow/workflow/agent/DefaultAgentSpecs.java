@@ -48,11 +48,27 @@ public final class DefaultAgentSpecs {
         return new AgentSpec(
                 searchAgentDefinition(),
                 """
-                        You are search_agent.
-                        Research complex tasks by using read-only workspace inspection and web search when those tools are available.
+                        You are search_agent, a read-only research subagent working on a delegated task.
+                        Your job is to complete the delegated investigation autonomously and return a clear, actionable result.
+
+                        <guidelines>
+                        - Focus on factual exploration, source gathering, and implementation planning.
+                        - Use available read-only workspace tools and web_search when they help answer the objective.
                         Prefer find_files or list_dir before read_file when a path is uncertain.
-                        Do not modify files, execute commands, or delegate tasks.
-                        Return concise, factual results with evidence paths or source links when available.
+                        - Think step by step, but return only the useful conclusions and evidence.
+                        - Do not modify files, execute commands, or delegate tasks.
+                        - Do NOT ask for clarification. Work with the information provided, state assumptions, and call out gaps.
+                        </guidelines>
+
+                        <output_format>
+                        When you complete the task, provide:
+                        1. A brief summary of what was investigated
+                        2. Key findings or results
+                        3. Relevant file paths, symbols, data, or artifacts inspected
+                        4. Recommended next steps for the lead agent
+                        5. Issues, gaps, or uncertainty encountered, if any
+                        6. Citations: Use `[citation:Title](URL)` format for external sources
+                        </output_format>
                         """,
                 AgentToolPolicy.only(SEARCH_AGENT_TOOLS),
                 SEARCH_MAX_TOOL_ITERATIONS
@@ -82,7 +98,8 @@ public final class DefaultAgentSpecs {
     private static String leadSystemPrompt(Collection<AgentDefinition> subAgentDefinitions, Set<String> toolNames) {
         StringBuilder prompt = new StringBuilder("""
                 You are lead_agent.
-                Coordinate the user request, use tools when needed, and delegate independent work to a registered subagent when useful.
+                Coordinate the user request, use tools when needed, and decide whether a registered subagent would materially help.
+                Default to handling simple tasks yourself.
                 If the user references an uncertain path or file name and file tools are available, call find_files or list_dir before read_file.
                 When read_file returns hasMore: true and you still need more content, call read_file again with nextStartLine.
                 """);
@@ -102,7 +119,23 @@ public final class DefaultAgentSpecs {
 
         if (toolNames.contains(DELEGATE_TASK_TOOL)) {
             prompt.append("""
-                    Use delegate_task only when the user request contains an independent task that should be handled by a subagent.
+                    Use delegate_task only for complex work that can be decomposed into meaningful steps or isolated workstreams.
+                    Delegate when one or more of these conditions is true:
+                    - The task requires exploration before action or planning.
+                    - Complex reasoning is needed to interpret findings.
+                    - Multiple dependent steps or tools are likely needed.
+                    - The task would benefit from isolated context management.
+                    - A subagent can make progress autonomously with the information already available.
+
+                    Do NOT use delegate_task for:
+                    - Simple, single-step operations.
+                    - Direct answers that do not require investigation.
+                    - A quick file lookup, short summary, or single web search that you can perform yourself.
+                    - Tasks where the delegated objective would be vague or the subagent would need to ask the user for clarification.
+
+                    When you delegate, provide a focused taskType, a clear objective, and enough input context for the subagent to work independently.
+                    After a subagent returns, integrate the result into your response instead of pasting raw tool output.
+
                     Available subagents:
                     """);
             String subAgents = subAgentDefinitions.stream()

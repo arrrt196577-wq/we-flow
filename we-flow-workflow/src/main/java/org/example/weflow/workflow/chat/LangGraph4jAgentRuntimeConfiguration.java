@@ -21,7 +21,7 @@ import org.springframework.context.annotation.Configuration;
 
 @Configuration(proxyBeanMethods = false)
 @ConditionalOnProperty(prefix = "we-flow.chat", name = "engine", havingValue = "langgraph4j")
-class LangGraph4jChatHarnessConfiguration {
+class LangGraph4jAgentRuntimeConfiguration {
 
     @Bean
     AgentGraphFactory agentGraphFactory(StreamingChatModel streamingChatModel, LC4jToolService toolService) {

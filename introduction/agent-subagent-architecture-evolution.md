@@ -176,7 +176,7 @@ points for later evolution.
 ## Expected Benefits
 
 - `simple_task_subagent`, web search prompts, and tool loop policies are no
-  longer mixed inside `ChatHarnessGraphFactory`.
+  longer mixed inside `AgentGraphFactory`.
 - New agents and subagents do not need repeated graph node and edge code.
 - Future migration toward DeerFlow-style runtime construction is concentrated in
   `AgentGraphFactory`.
