@@ -8,8 +8,13 @@ import java.util.List;
 import java.util.Set;
 import java.util.stream.Collectors;
 import org.bsc.langgraph4j.langchain4j.tool.LC4jToolService;
+import org.example.weflow.agent.config.AgentDelegationConfiguration;
+import org.example.weflow.agent.subagent.InMemorySubAgentRegistry;
+import org.example.weflow.agent.subagent.SimpleTaskSubAgentExecutor;
+import org.example.weflow.agent.tool.TaskDelegationTool;
 import org.example.weflow.agent.tool.WebSearchTools;
 import org.example.weflow.agent.tool.WorkspaceFileTools;
+import org.example.weflow.core.agent.AgentExecutor;
 import org.example.weflow.core.workspace.DefaultWorkspaceService;
 import org.example.weflow.core.workspace.WorkspaceProperties;
 import org.example.weflow.integration.search.WebSearchClient;
@@ -78,6 +83,23 @@ class AgentToolConfigurationTest {
                     assertThat(context).hasSingleBean(WebSearchClient.class);
                     assertThat(context).hasSingleBean(WebSearchTools.class);
                     assertThat(toolNames(context.getBean(LC4jToolService.class))).contains("web_search");
+                });
+    }
+
+    @Test
+    void shouldRegisterTaskDelegationToolWhenDelegationIsEnabled() {
+        new ApplicationContextRunner()
+                .withPropertyValues("we-flow.agent.delegation.enabled=true")
+                .withBean(AgentExecutor.class, SimpleTaskSubAgentExecutor::new)
+                .withUserConfiguration(
+                        AgentDelegationConfiguration.class,
+                        InMemorySubAgentRegistry.class,
+                        AgentToolConfiguration.class,
+                        TaskDelegationTool.class
+                )
+                .run(context -> {
+                    assertThat(context).hasSingleBean(TaskDelegationTool.class);
+                    assertThat(toolNames(context.getBean(LC4jToolService.class))).contains("delegate_task");
                 });
     }
 

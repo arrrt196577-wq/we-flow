@@ -48,6 +48,8 @@ mvn -pl we-flow-app -am clean package
 - Existing database table structures are documented in
   `introduction/database-schema.md`; read this file when database information is
   needed.
+- When using DEER FLOW as a reference, read its local project code at
+  `F:\deer-flow` instead of reading it from GitHub.
 - Keep changes scoped to the requested behavior.
 - Avoid unrelated refactors.
 - When generating test code, avoid mock-based tests where practical; prefer

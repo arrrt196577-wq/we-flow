@@ -11,15 +11,12 @@ import org.springframework.context.annotation.Configuration;
 public class AgentToolConfiguration {
 
     /**
-     * Spring注入所有实现了AgnetTool接口的Bean
-     * @param tools
-     * @return
+     * Registers every Spring bean marked as an agent tool with LangChain4j.
      */
     @Bean
     @ConditionalOnMissingBean
     public LC4jToolService lc4jToolService(List<AgentTool> tools) {
         LC4jToolService.Builder builder = LC4jToolService.builder();
-        // 扫描工具对象带@Tool注解的方法，提取工具名、描述、参数schema
         tools.forEach(builder::toolsFromObject);
         return builder.build();
     }
