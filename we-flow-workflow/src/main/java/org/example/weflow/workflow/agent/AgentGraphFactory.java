@@ -51,6 +51,8 @@ public class AgentGraphFactory {
     private static final String FINISH = "finish";
     private static final String CONTINUE = "continue";
     private static final String WEB_SEARCH_TOOL = "web_search";
+    private static final String WEB_FETCH_TOOL = "web_fetch";
+    private static final Set<String> WEB_TOOLS = Set.of(WEB_SEARCH_TOOL, WEB_FETCH_TOOL);
 
     private final StreamingChatModel streamingChatModel;
     private final LC4jToolService toolService;
@@ -139,7 +141,7 @@ public class AgentGraphFactory {
         }
 
         private Command routeAfterTool(AgentThreadState state, RunnableConfig config) {
-            return searchFailureMessage(state.messages())
+            return webToolFailureMessage(state.messages())
                     .map(this::finishCommand)
                     .orElseGet(() -> new Command(CONTINUE));
         }
@@ -233,6 +235,11 @@ public class AgentGraphFactory {
             if (includesWebSearch) {
                 return "搜索功能未启用，当前无法联网查询。请启用 we-flow.search.enabled=true 后重试。";
             }
+            boolean includesWebFetch = unsupportedToolRequests.stream()
+                    .anyMatch(toolRequest -> WEB_FETCH_TOOL.equals(toolRequest.name()));
+            if (includesWebFetch) {
+                return "网页读取功能未启用，当前无法抓取网页内容。请启用 we-flow.fetch.enabled=true 后重试。";
+            }
 
             String toolNames = unsupportedToolRequests.stream()
                     .map(ToolExecutionRequest::name)
@@ -241,14 +248,13 @@ public class AgentGraphFactory {
             return "请求的工具不可用：" + toolNames + "，无法执行该操作。";
         }
 
-        private java.util.Optional<String> searchFailureMessage(List<ChatMessage> messages) {
+        private java.util.Optional<String> webToolFailureMessage(List<ChatMessage> messages) {
             return latestToolResultMessages(messages).stream()
                     .filter(ToolExecutionResultMessage.class::isInstance)
                     .map(ToolExecutionResultMessage.class::cast)
-                    .filter(message -> WEB_SEARCH_TOOL.equals(message.toolName()))
-                    .map(ToolExecutionResultMessage::text)
-                    .filter(this::isToolError)
-                    .map(this::searchFailureUserMessage)
+                    .filter(message -> WEB_TOOLS.contains(message.toolName()))
+                    .filter(message -> isToolError(message.text()))
+                    .map(message -> webToolFailureUserMessage(message.toolName(), message.text()))
                     .findFirst();
         }
 
@@ -276,6 +282,19 @@ public class AgentGraphFactory {
             String message = extractToolErrorMessage(toolResultText)
                     .orElse("搜索工具返回错误。");
             return "联网搜索失败：" + message + "。我没有获取到可靠搜索结果，因此不会继续生成联网结论。";
+        }
+
+        private String webToolFailureUserMessage(String toolName, String toolResultText) {
+            if (WEB_FETCH_TOOL.equals(toolName)) {
+                return fetchFailureUserMessage(toolResultText);
+            }
+            return searchFailureUserMessage(toolResultText);
+        }
+
+        private String fetchFailureUserMessage(String toolResultText) {
+            String message = extractToolErrorMessage(toolResultText)
+                    .orElse("网页读取工具返回错误。");
+            return "网页读取失败：" + message + "。我没有获取到可靠网页内容，因此不会继续基于该页面生成结论。";
         }
 
         private java.util.Optional<String> extractToolErrorMessage(String toolResultText) {

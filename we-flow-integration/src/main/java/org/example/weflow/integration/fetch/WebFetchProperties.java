@@ -1,43 +1,39 @@
-package org.example.weflow.integration.search;
+package org.example.weflow.integration.fetch;
 
 import java.time.Duration;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.util.StringUtils;
 
-@ConfigurationProperties(prefix = "we-flow.search")
-public record WebSearchProperties(
+@ConfigurationProperties(prefix = "we-flow.fetch")
+public record WebFetchProperties(
         Boolean enabled,
         String provider,
-        Integer maxResults,
+        Integer maxContentChars,
         Duration timeout,
-        String region,
-        String safeSearch,
         ProxyProperties proxy,
         JinaProperties jina
 ) {
 
     public static final String DEFAULT_PROVIDER = "jina";
-    public static final int DEFAULT_MAX_RESULTS = 5;
-    public static final int MAX_RESULTS_LIMIT = 10;
+    public static final int DEFAULT_MAX_CONTENT_CHARS = 12_000;
+    public static final int MAX_CONTENT_CHARS_LIMIT = 100_000;
     public static final Duration DEFAULT_TIMEOUT = Duration.ofSeconds(10);
-    public static final String DEFAULT_REGION = "wt-wt";
-    public static final String DEFAULT_SAFE_SEARCH = "moderate";
     public static final String DEFAULT_PROXY_HOST = "127.0.0.1";
     public static final int DEFAULT_PROXY_PORT = 7890;
-    public static final String DEFAULT_JINA_BASE_URL = "https://s.jina.ai";
-    public static final int DEFAULT_JINA_MAX_SNIPPET_CHARS = 800;
+    public static final String DEFAULT_JINA_BASE_URL = "https://r.jina.ai";
     public static final int DEFAULT_JINA_MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
     public static final int DEFAULT_JINA_MAX_TOKENS = 8000;
 
-    public WebSearchProperties {
+    public WebFetchProperties {
         enabled = enabled != null && enabled;
         provider = StringUtils.hasText(provider) ? provider.trim().toLowerCase() : DEFAULT_PROVIDER;
-        maxResults = clamp(maxResults == null ? DEFAULT_MAX_RESULTS : maxResults, 1, MAX_RESULTS_LIMIT);
+        maxContentChars = clamp(
+                maxContentChars == null ? DEFAULT_MAX_CONTENT_CHARS : maxContentChars,
+                1,
+                MAX_CONTENT_CHARS_LIMIT);
         timeout = timeout == null ? DEFAULT_TIMEOUT : timeout;
-        region = StringUtils.hasText(region) ? region.trim() : DEFAULT_REGION;
-        safeSearch = StringUtils.hasText(safeSearch) ? safeSearch.trim().toLowerCase() : DEFAULT_SAFE_SEARCH;
         proxy = proxy == null ? new ProxyProperties(false, null, null, null, null) : proxy;
-        jina = jina == null ? new JinaProperties(null, null, null, null, null, null) : jina;
+        jina = jina == null ? new JinaProperties(null, null, null, null, null) : jina;
     }
 
     public boolean isEnabled() {
@@ -69,7 +65,6 @@ public record WebSearchProperties(
             String apiKey,
             String baseUrl,
             Boolean noCache,
-            Integer maxSnippetChars,
             Integer maxResponseBytes,
             Integer maxTokens
     ) {
@@ -78,8 +73,6 @@ public record WebSearchProperties(
             apiKey = StringUtils.hasText(apiKey) ? apiKey.trim() : "";
             baseUrl = normalizeBaseUrl(StringUtils.hasText(baseUrl) ? baseUrl.trim() : DEFAULT_JINA_BASE_URL);
             noCache = noCache != null && noCache;
-            maxSnippetChars = Math.max(0,
-                    maxSnippetChars == null ? DEFAULT_JINA_MAX_SNIPPET_CHARS : maxSnippetChars);
             maxResponseBytes = Math.max(256 * 1024,
                     maxResponseBytes == null ? DEFAULT_JINA_MAX_RESPONSE_BYTES : maxResponseBytes);
             maxTokens = maxTokens == null ? DEFAULT_JINA_MAX_TOKENS : normalizeMaxTokens(maxTokens);

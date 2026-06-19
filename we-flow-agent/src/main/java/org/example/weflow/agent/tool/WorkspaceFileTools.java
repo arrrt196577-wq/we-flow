@@ -12,10 +12,12 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
 import java.util.stream.Stream;
+import lombok.extern.slf4j.Slf4j;
 import org.example.weflow.core.workspace.WorkspaceService;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
+@Slf4j
 @Component
 public class WorkspaceFileTools implements AgentTool {
 
@@ -39,6 +41,7 @@ public class WorkspaceFileTools implements AgentTool {
             @P("Partial file name or relative path to find.") String query,
             @P(value = "Maximum number of matches to return.", required = false) Integer maxResults
     ) {
+        log.info("Tool called: find_files query={}, maxResults={}", logValue(query), maxResults);
         if (!StringUtils.hasText(query)) {
             return error("INVALID_ARGUMENT", "query must not be blank");
         }
@@ -80,6 +83,7 @@ public class WorkspaceFileTools implements AgentTool {
             @P(value = "Start line, 1-based.", required = false) Integer startLine,
             @P(value = "Maximum number of lines to read.", required = false) Integer maxLines
     ) {
+        log.info("Tool called: read_file path={}, startLine={}, maxLines={}", logValue(path), startLine, maxLines);
         if (!StringUtils.hasText(path)) {
             return error("INVALID_ARGUMENT", "path must not be blank");
         }
@@ -118,6 +122,7 @@ public class WorkspaceFileTools implements AgentTool {
             @P(value = "Relative directory path inside the workspace. Use . for root.", required = false) String path,
             @P(value = "Maximum number of entries to return.", required = false) Integer maxEntries
     ) {
+        log.info("Tool called: list_dir path={}, maxEntries={}", logValue(path), maxEntries);
         String requestedPath = StringUtils.hasText(path) ? path : ".";
         Path resolvedPath;
         try {
@@ -236,6 +241,10 @@ public class WorkspaceFileTools implements AgentTool {
 
     private String normalizeForMatch(String value) {
         return value.replace('\\', '/').trim().toLowerCase(Locale.ROOT);
+    }
+
+    private String logValue(String value) {
+        return value == null ? "" : value.replace('\n', ' ').replace('\r', ' ').trim();
     }
 
     private int clamp(Integer value, int defaultValue, int min, int max) {

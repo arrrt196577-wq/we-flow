@@ -4,6 +4,7 @@ import dev.langchain4j.agent.tool.P;
 import dev.langchain4j.agent.tool.Tool;
 import java.time.Instant;
 import java.util.UUID;
+import lombok.extern.slf4j.Slf4j;
 import org.example.weflow.agent.subagent.SubAgentRegistry;
 import org.example.weflow.core.agent.AgentContext;
 import org.example.weflow.core.agent.AgentExecutor;
@@ -14,6 +15,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
+@Slf4j
 @Component
 @ConditionalOnProperty(prefix = "we-flow.agent.delegation", name = "enabled", havingValue = "true")
 public class TaskDelegationTool implements AgentTool {
@@ -33,6 +35,8 @@ public class TaskDelegationTool implements AgentTool {
             @P("Clear objective for the subagent.") String objective,
             @P(value = "Task input as plain text or a JSON string.", required = false) String input
     ) {
+        log.info("Tool called: delegate_task subAgentCode={}, taskType={}, objective={}, inputLength={}",
+                sanitize(subAgentCode), sanitize(taskType), sanitize(objective), input == null ? 0 : input.length());
         String taskId = UUID.randomUUID().toString();
         String traceId = UUID.randomUUID().toString();
         Instant startedAt = Instant.now();

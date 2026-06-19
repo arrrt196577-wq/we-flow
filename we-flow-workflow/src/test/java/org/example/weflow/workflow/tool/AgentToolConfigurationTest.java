@@ -12,11 +12,16 @@ import org.example.weflow.agent.config.AgentDelegationConfiguration;
 import org.example.weflow.agent.subagent.InMemorySubAgentRegistry;
 import org.example.weflow.agent.subagent.SimpleTaskSubAgentExecutor;
 import org.example.weflow.agent.tool.TaskDelegationTool;
+import org.example.weflow.agent.tool.WebFetchTools;
 import org.example.weflow.agent.tool.WebSearchTools;
 import org.example.weflow.agent.tool.WorkspaceFileTools;
 import org.example.weflow.core.agent.AgentExecutor;
 import org.example.weflow.core.workspace.DefaultWorkspaceService;
 import org.example.weflow.core.workspace.WorkspaceProperties;
+import org.example.weflow.integration.fetch.WebFetchClient;
+import org.example.weflow.integration.fetch.WebFetchConfiguration;
+import org.example.weflow.integration.fetch.WebFetchProperties;
+import org.example.weflow.integration.fetch.WebFetchResponse;
 import org.example.weflow.integration.search.WebSearchClient;
 import org.example.weflow.integration.search.WebSearchConfiguration;
 import org.example.weflow.integration.search.WebSearchProperties;
@@ -66,6 +71,7 @@ class AgentToolConfigurationTest {
                         Duration.ofSeconds(10),
                         "wt-wt",
                         "moderate",
+                        null,
                         null))
                 .withUserConfiguration(AgentToolConfiguration.class, WebSearchTools.class)
                 .run(context -> {
@@ -77,12 +83,64 @@ class AgentToolConfigurationTest {
     @Test
     void shouldRegisterWebSearchToolWithRealSearchConfigurationWhenSearchIsEnabled() {
         new ApplicationContextRunner()
-                .withPropertyValues("we-flow.search.enabled=true")
+                .withPropertyValues(
+                        "we-flow.search.enabled=true",
+                        "we-flow.search.jina.api-key=test-key"
+                )
                 .withUserConfiguration(WebSearchConfiguration.class, AgentToolConfiguration.class, WebSearchTools.class)
                 .run(context -> {
                     assertThat(context).hasSingleBean(WebSearchClient.class);
                     assertThat(context).hasSingleBean(WebSearchTools.class);
                     assertThat(toolNames(context.getBean(LC4jToolService.class))).contains("web_search");
+                });
+    }
+
+    @Test
+    void shouldNotRegisterWebFetchToolWhenFetchIsDisabledByDefault() {
+        new ApplicationContextRunner()
+                .withBean(WebFetchClient.class, () -> request -> new WebFetchResponse(
+                        request.url(), request.url(), "", "", false, 0))
+                .withUserConfiguration(AgentToolConfiguration.class, WebFetchTools.class)
+                .run(context -> {
+                    assertThat(context).doesNotHaveBean(WebFetchTools.class);
+                    assertThat(toolNames(context.getBean(LC4jToolService.class))).doesNotContain("web_fetch");
+                });
+    }
+
+    @Test
+    void shouldRegisterWebFetchToolWhenFetchIsEnabled() {
+        new ApplicationContextRunner()
+                .withPropertyValues("we-flow.fetch.enabled=true")
+                .withBean(WebFetchClient.class, () -> request -> new WebFetchResponse(
+                        request.url(), request.url(), "", "", false, 0))
+                .withBean(WebFetchProperties.class, () -> new WebFetchProperties(
+                        true,
+                        "jina",
+                        12_000,
+                        Duration.ofSeconds(10),
+                        null,
+                        null))
+                .withUserConfiguration(AgentToolConfiguration.class, WebFetchTools.class)
+                .run(context -> {
+                    assertThat(context).hasSingleBean(WebFetchTools.class);
+                    assertThat(toolNames(context.getBean(LC4jToolService.class)))
+                            .contains("web_fetch")
+                            .doesNotContain("web_search");
+                });
+    }
+
+    @Test
+    void shouldRegisterWebFetchToolWithRealFetchConfigurationWhenFetchIsEnabled() {
+        new ApplicationContextRunner()
+                .withPropertyValues(
+                        "we-flow.fetch.enabled=true",
+                        "we-flow.fetch.jina.api-key=test-key"
+                )
+                .withUserConfiguration(WebFetchConfiguration.class, AgentToolConfiguration.class, WebFetchTools.class)
+                .run(context -> {
+                    assertThat(context).hasSingleBean(WebFetchClient.class);
+                    assertThat(context).hasSingleBean(WebFetchTools.class);
+                    assertThat(toolNames(context.getBean(LC4jToolService.class))).contains("web_fetch");
                 });
     }
 

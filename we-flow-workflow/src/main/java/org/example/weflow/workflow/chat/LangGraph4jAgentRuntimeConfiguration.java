@@ -10,17 +10,20 @@ import org.example.weflow.core.agent.AgentDefinition;
 import org.example.weflow.core.agent.AgentExecutor;
 import org.example.weflow.core.agent.AgentSpec;
 import org.example.weflow.workflow.agent.AgentGraphFactory;
+import org.example.weflow.workflow.agent.AgentRuntimeProperties;
 import org.example.weflow.workflow.agent.DefaultAgentSpecs;
 import org.example.weflow.workflow.agent.GraphBackedAgentExecutor;
 import org.example.weflow.workflow.agent.ImplementPlaceholderAgentExecutor;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 @Configuration(proxyBeanMethods = false)
 @ConditionalOnProperty(prefix = "we-flow.chat", name = "engine", havingValue = "langgraph4j")
+@EnableConfigurationProperties(AgentRuntimeProperties.class)
 class LangGraph4jAgentRuntimeConfiguration {
 
     @Bean
@@ -29,17 +32,25 @@ class LangGraph4jAgentRuntimeConfiguration {
     }
 
     @Bean("leadAgentSpec")
-    AgentSpec leadAgentSpec(ObjectProvider<SubAgentRegistry> subAgentRegistryProvider, LC4jToolService toolService) {
+    AgentSpec leadAgentSpec(
+            ObjectProvider<SubAgentRegistry> subAgentRegistryProvider,
+            LC4jToolService toolService,
+            AgentRuntimeProperties properties
+    ) {
         SubAgentRegistry subAgentRegistry = subAgentRegistryProvider.getIfAvailable();
         List<AgentDefinition> subAgentDefinitions = subAgentRegistry == null
                 ? List.of()
                 : subAgentRegistry.listDefinitions();
-        return DefaultAgentSpecs.leadAgentSpec(subAgentDefinitions, toolNames(toolService));
+        return DefaultAgentSpecs.leadAgentSpec(
+                subAgentDefinitions,
+                toolNames(toolService),
+                properties.leadMaxToolIterations()
+        );
     }
 
     @Bean("searchAgentSpec")
-    AgentSpec searchAgentSpec() {
-        return DefaultAgentSpecs.searchAgentSpec();
+    AgentSpec searchAgentSpec(AgentRuntimeProperties properties) {
+        return DefaultAgentSpecs.searchAgentSpec(properties.searchMaxToolIterations());
     }
 
     @Bean
