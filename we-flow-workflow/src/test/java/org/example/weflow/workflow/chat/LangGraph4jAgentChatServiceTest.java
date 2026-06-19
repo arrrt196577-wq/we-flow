@@ -18,6 +18,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -32,7 +33,9 @@ import org.example.weflow.agent.tool.WorkspaceFileTools;
 import org.example.weflow.core.agent.AgentContext;
 import org.example.weflow.core.agent.AgentDefinition;
 import org.example.weflow.core.agent.AgentExecutor;
+import org.example.weflow.core.agent.AgentRuntimeLimits;
 import org.example.weflow.core.agent.AgentResult;
+import org.example.weflow.core.agent.AgentStatus;
 import org.example.weflow.core.agent.AgentSpec;
 import org.example.weflow.core.agent.AgentTask;
 import org.example.weflow.core.agent.AgentType;
@@ -83,16 +86,48 @@ class LangGraph4jAgentChatServiceTest {
     }
 
     @Test
-    void agentMaxToolIterationsShouldComeFromProperties() {
+    void agentRuntimeLimitsShouldUseDefaults() {
+        contextRunner
+                .withPropertyValues("we-flow.chat.engine=langgraph4j")
+                .run(context -> {
+                    AgentRuntimeLimits leadLimits = context.getBean("leadAgentSpec", AgentSpec.class).runtimeLimits();
+                    AgentRuntimeLimits searchLimits = context.getBean("searchAgentSpec", AgentSpec.class).runtimeLimits();
+
+                    assertThat(leadLimits.maxLoops()).isEqualTo(100);
+                    assertThat(leadLimits.llmTimeout()).isEqualTo(Duration.ofSeconds(600));
+                    assertThat(leadLimits.overallTimeout()).isNull();
+                    assertThat(leadLimits.leadToolCallLimit().warningThreshold()).isEqualTo(30);
+                    assertThat(leadLimits.leadToolCallLimit().stopThreshold()).isEqualTo(50);
+                    assertThat(searchLimits.maxLoops()).isEqualTo(50);
+                    assertThat(searchLimits.llmTimeout()).isEqualTo(Duration.ofSeconds(600));
+                    assertThat(searchLimits.overallTimeout()).isEqualTo(Duration.ofSeconds(900));
+                    assertThat(searchLimits.leadToolCallLimit()).isNull();
+                });
+    }
+
+    @Test
+    void agentRuntimeLimitsShouldComeFromProperties() {
         contextRunner
                 .withPropertyValues(
                         "we-flow.chat.engine=langgraph4j",
-                        "we-flow.agent.max-tool-iterations.lead=3",
-                        "we-flow.agent.max-tool-iterations.search=4"
+                        "we-flow.agent.max-loops.lead=3",
+                        "we-flow.agent.max-loops.subagent=4",
+                        "we-flow.agent.llm-timeout=5s",
+                        "we-flow.agent.subagent-timeout=7s",
+                        "we-flow.agent.lead-tool-call-limit.warning-threshold=2",
+                        "we-flow.agent.lead-tool-call-limit.stop-threshold=3"
                 )
                 .run(context -> {
-                    assertThat(context.getBean("leadAgentSpec", AgentSpec.class).maxToolIterations()).isEqualTo(3);
-                    assertThat(context.getBean("searchAgentSpec", AgentSpec.class).maxToolIterations()).isEqualTo(4);
+                    AgentRuntimeLimits leadLimits = context.getBean("leadAgentSpec", AgentSpec.class).runtimeLimits();
+                    AgentRuntimeLimits searchLimits = context.getBean("searchAgentSpec", AgentSpec.class).runtimeLimits();
+
+                    assertThat(leadLimits.maxLoops()).isEqualTo(3);
+                    assertThat(leadLimits.llmTimeout()).isEqualTo(Duration.ofSeconds(5));
+                    assertThat(leadLimits.leadToolCallLimit().warningThreshold()).isEqualTo(2);
+                    assertThat(leadLimits.leadToolCallLimit().stopThreshold()).isEqualTo(3);
+                    assertThat(searchLimits.maxLoops()).isEqualTo(4);
+                    assertThat(searchLimits.llmTimeout()).isEqualTo(Duration.ofSeconds(5));
+                    assertThat(searchLimits.overallTimeout()).isEqualTo(Duration.ofSeconds(7));
                 });
     }
 
@@ -485,6 +520,217 @@ class LangGraph4jAgentChatServiceTest {
         assertThat(toolResultText(chatModel.requests().get(2))).contains("1 | one", "2 | two");
     }
 
+    @Test
+    void leadMaxLoopsShouldCountEveryLlmCall() throws IOException {
+        Files.createDirectories(workspaceRoot.resolve("docs"));
+        Files.writeString(workspaceRoot.resolve("docs/readme.md"), "hello\n", StandardCharsets.UTF_8);
+        ToolCallingChatModel chatModel = new ToolCallingChatModel(List.of(
+                AiMessage.from(toolRequest("tool-call-1", "read_file",
+                        "{\"path\":\"docs/readme.md\",\"startLine\":1,\"maxLines\":10}")),
+                AiMessage.from("should not be called")
+        ));
+        AgentRuntimeLimits limits = AgentRuntimeLimits.lead(
+                1,
+                Duration.ofSeconds(5),
+                new AgentRuntimeLimits.ToolCallLimit(30, 50)
+        );
+        LangGraph4jAgentChatService service = service(chatModel, fileToolService(), List.of(), limits);
+
+        String response = stream(service, new ChatStreamRequest("read docs/readme.md", "conversation-max-loop", null));
+
+        assertThat(response).contains("status: error")
+                .contains("AGENT_MAX_LOOPS_EXCEEDED");
+        assertThat(chatModel.requests()).hasSize(1);
+    }
+
+    @Test
+    void subAgentMaxLoopsShouldReturnFailedResult() throws IOException {
+        Files.createDirectories(workspaceRoot.resolve("docs"));
+        Files.writeString(workspaceRoot.resolve("docs/readme.md"), "hello\n", StandardCharsets.UTF_8);
+        ToolCallingChatModel chatModel = new ToolCallingChatModel(List.of(
+                AiMessage.from(toolRequest("tool-call-1", "read_file",
+                        "{\"path\":\"docs/readme.md\",\"startLine\":1,\"maxLines\":10}")),
+                AiMessage.from("should not be called")
+        ));
+        AgentExecutor searchAgent = new GraphBackedAgentExecutor(
+                DefaultAgentSpecs.searchAgentSpec(AgentRuntimeLimits.subagent(
+                        1,
+                        Duration.ofSeconds(5),
+                        Duration.ofSeconds(30)
+                )),
+                new AgentGraphFactory(chatModel, fileToolService())
+        );
+
+        AgentResult result = searchAgent.execute(
+                new AgentTask("search-task-max-loop", "research", "read file", ""),
+                new AgentContext("lead_agent", "trace-max-loop")
+        );
+
+        assertThat(result.status()).isEqualTo(AgentStatus.FAILED);
+        assertThat(result.errorCode()).isEqualTo("AGENT_MAX_LOOPS_EXCEEDED");
+        assertThat(result.output()).isNull();
+        assertThat(chatModel.requests()).hasSize(1);
+    }
+
+    @Test
+    void leadLlmTimeoutShouldReturnNormalErrorContent() {
+        LangGraph4jAgentChatService service = service(
+                new HangingChatModel(),
+                LC4jToolService.builder().build(),
+                List.of(),
+                AgentRuntimeLimits.lead(
+                        3,
+                        Duration.ofMillis(10),
+                        new AgentRuntimeLimits.ToolCallLimit(30, 50)
+                )
+        );
+
+        String response = stream(service, new ChatStreamRequest("hello", "conversation-llm-timeout", null));
+
+        assertThat(response).contains("status: error")
+                .contains("AGENT_LLM_TIMEOUT");
+    }
+
+    @Test
+    void subAgentLlmTimeoutShouldReturnFailedResult() {
+        AgentExecutor searchAgent = new GraphBackedAgentExecutor(
+                DefaultAgentSpecs.searchAgentSpec(AgentRuntimeLimits.subagent(
+                        3,
+                        Duration.ofMillis(10),
+                        Duration.ofSeconds(5)
+                )),
+                new AgentGraphFactory(new HangingChatModel(), LC4jToolService.builder().build())
+        );
+
+        AgentResult result = searchAgent.execute(
+                new AgentTask("search-task-llm-timeout", "research", "hang", ""),
+                new AgentContext("lead_agent", "trace-llm-timeout")
+        );
+
+        assertThat(result.status()).isEqualTo(AgentStatus.FAILED);
+        assertThat(result.errorCode()).isEqualTo("AGENT_LLM_TIMEOUT");
+        assertThat(result.output()).isNull();
+    }
+
+    @Test
+    void subAgentOverallTimeoutShouldIncludeToolExecution() {
+        ToolCallingChatModel chatModel = new ToolCallingChatModel(List.of(
+                AiMessage.from(toolRequest("tool-call-slow", "web_search", "{\"query\":\"slow\"}")),
+                AiMessage.from("should not be called")
+        ));
+        LC4jToolService toolService = LC4jToolService.builder()
+                .toolsFromObject(new SlowWebSearchTool(Duration.ofMillis(80)))
+                .build();
+        AgentExecutor searchAgent = new GraphBackedAgentExecutor(
+                DefaultAgentSpecs.searchAgentSpec(AgentRuntimeLimits.subagent(
+                        3,
+                        Duration.ofSeconds(5),
+                        Duration.ofMillis(20)
+                )),
+                new AgentGraphFactory(chatModel, toolService)
+        );
+
+        AgentResult result = searchAgent.execute(
+                new AgentTask("search-task-overall-timeout", "research", "slow tool", ""),
+                new AgentContext("lead_agent", "trace-overall-timeout")
+        );
+
+        assertThat(result.status()).isEqualTo(AgentStatus.FAILED);
+        assertThat(result.errorCode()).isEqualTo("SUB_AGENT_TIMEOUT");
+        assertThat(result.output()).isNull();
+        assertThat(chatModel.requests()).hasSize(1);
+    }
+
+    @Test
+    void leadToolWarningShouldBeInjectedAtWarningThreshold() throws IOException {
+        Files.createDirectories(workspaceRoot.resolve("docs"));
+        Files.writeString(workspaceRoot.resolve("docs/readme.md"), "hello\n", StandardCharsets.UTF_8);
+        ToolCallingChatModel chatModel = new ToolCallingChatModel(List.of(
+                AiMessage.from(toolRequest("tool-call-1", "read_file",
+                        "{\"path\":\"docs/readme.md\",\"startLine\":1,\"maxLines\":10}")),
+                AiMessage.from(toolRequest("tool-call-2", "read_file",
+                        "{\"path\":\"docs/readme.md\",\"startLine\":1,\"maxLines\":10}")),
+                AiMessage.from("done")
+        ));
+        AgentRuntimeLimits limits = AgentRuntimeLimits.lead(
+                5,
+                Duration.ofSeconds(5),
+                new AgentRuntimeLimits.ToolCallLimit(2, 4)
+        );
+        LangGraph4jAgentChatService service = service(chatModel, fileToolService(), List.of(), limits);
+
+        String response = stream(service, new ChatStreamRequest("read twice", "conversation-tool-warning", null));
+
+        assertThat(response).isEqualTo("done");
+        assertThat(toolResultText(chatModel.requests().get(2)))
+                .contains("LEAD_TOOL_CALL_WARNING")
+                .contains("read_file");
+    }
+
+    @Test
+    void leadToolHardStopShouldPreventThresholdCall() throws IOException {
+        Files.createDirectories(workspaceRoot.resolve("docs"));
+        Files.writeString(workspaceRoot.resolve("docs/readme.md"), "hello\n", StandardCharsets.UTF_8);
+        ToolCallingChatModel chatModel = new ToolCallingChatModel(List.of(
+                AiMessage.from(toolRequest("tool-call-1", "read_file",
+                        "{\"path\":\"docs/readme.md\",\"startLine\":1,\"maxLines\":10}")),
+                AiMessage.from(toolRequest("tool-call-2", "read_file",
+                        "{\"path\":\"docs/readme.md\",\"startLine\":1,\"maxLines\":10}")),
+                AiMessage.from(toolRequest("tool-call-3", "read_file",
+                        "{\"path\":\"docs/readme.md\",\"startLine\":1,\"maxLines\":10}")),
+                AiMessage.from("should not be called")
+        ));
+        AgentRuntimeLimits limits = AgentRuntimeLimits.lead(
+                10,
+                Duration.ofSeconds(5),
+                new AgentRuntimeLimits.ToolCallLimit(2, 3)
+        );
+        LangGraph4jAgentChatService service = service(chatModel, fileToolService(), List.of(), limits);
+
+        String response = stream(service, new ChatStreamRequest("read too much", "conversation-tool-stop", null));
+
+        assertThat(response).contains("status: error")
+                .contains("LEAD_TOOL_CALL_LIMIT_EXCEEDED")
+                .contains("read_file");
+        assertThat(chatModel.requests()).hasSize(3);
+    }
+
+    @Test
+    void subAgentToolCallsShouldNotCountAgainstLeadToolFrequency() throws IOException {
+        Files.createDirectories(workspaceRoot.resolve("docs"));
+        Files.writeString(workspaceRoot.resolve("docs/readme.md"), "hello\n", StandardCharsets.UTF_8);
+        ToolCallingChatModel chatModel = new ToolCallingChatModel(List.of(
+                AiMessage.from(toolRequest("tool-call-delegate", "delegate_task",
+                        "{\"subAgentCode\":\"search_agent\",\"taskType\":\"general_task\","
+                                + "\"objective\":\"verify delegation\",\"input\":\"abc\"}")),
+                AiMessage.from(toolRequest("tool-call-read", "read_file",
+                        "{\"path\":\"docs/readme.md\",\"startLine\":1,\"maxLines\":10}")),
+                AiMessage.from("done")
+        ));
+        AgentExecutor subAgent = successfulSubAgentWithInternalReads(
+                DefaultAgentSpecs.SEARCH_AGENT_CODE,
+                new WorkspaceFileTools(new DefaultWorkspaceService(new WorkspaceProperties(workspaceRoot.toString())))
+        );
+        LC4jToolService toolService = LC4jToolService.builder()
+                .toolsFromObject(new WorkspaceFileTools(
+                        new DefaultWorkspaceService(new WorkspaceProperties(workspaceRoot.toString()))))
+                .toolsFromObject(new TaskDelegationTool(new InMemorySubAgentRegistry(List.of(subAgent))))
+                .build();
+        AgentRuntimeLimits limits = AgentRuntimeLimits.lead(
+                10,
+                Duration.ofSeconds(5),
+                new AgentRuntimeLimits.ToolCallLimit(1, 2)
+        );
+        LangGraph4jAgentChatService service = service(chatModel, toolService, List.of(subAgent), limits);
+
+        String response = stream(service, new ChatStreamRequest("delegate then read", "conversation-subagent-counts", null));
+
+        assertThat(response).isEqualTo("done");
+        assertThat(toolResultText(chatModel.requests().get(2)))
+                .contains("LEAD_TOOL_CALL_WARNING")
+                .contains("read_file");
+    }
+
     private LangGraph4jAgentChatService service(StreamingChatModel chatModel) {
         return service(chatModel, LC4jToolService.builder().build());
     }
@@ -498,13 +744,23 @@ class LangGraph4jAgentChatServiceTest {
             LC4jToolService toolService,
             List<AgentExecutor> subAgents
     ) {
+        return service(chatModel, toolService, subAgents, DefaultAgentSpecs.defaultLeadRuntimeLimits());
+    }
+
+    private LangGraph4jAgentChatService service(
+            StreamingChatModel chatModel,
+            LC4jToolService toolService,
+            List<AgentExecutor> subAgents,
+            AgentRuntimeLimits leadRuntimeLimits
+    ) {
         return new LangGraph4jAgentChatService(
                 new AgentGraphFactory(chatModel, toolService),
                 DefaultAgentSpecs.leadAgentSpec(
                         subAgents.stream()
                                 .map(AgentExecutor::definition)
                                 .toList(),
-                        toolNames(toolService)
+                        toolNames(toolService),
+                        leadRuntimeLimits
                 )
         );
     }
@@ -552,6 +808,25 @@ class LangGraph4jAgentChatServiceTest {
             public AgentResult execute(AgentTask task, AgentContext context) {
                 Instant startedAt = Instant.now();
                 return AgentResult.success(task.taskId(), context.traceId(), code, output, startedAt, Instant.now());
+            }
+        };
+    }
+
+    private AgentExecutor successfulSubAgentWithInternalReads(String code, WorkspaceFileTools fileTools) {
+        return new AgentExecutor() {
+            @Override
+            public AgentDefinition definition() {
+                return new AgentDefinition(code, code, AgentType.SUB, "test subagent", true);
+            }
+
+            @Override
+            public AgentResult execute(AgentTask task, AgentContext context) {
+                for (int i = 0; i < 5; i++) {
+                    fileTools.readFile("docs/readme.md", 1, 1);
+                }
+                Instant startedAt = Instant.now();
+                return AgentResult.success(task.taskId(), context.traceId(), code,
+                        "internal reads completed", startedAt, Instant.now());
             }
         };
     }
@@ -648,6 +923,26 @@ class LangGraph4jAgentChatServiceTest {
         }
     }
 
+    private static final class SlowWebSearchTool implements AgentTool {
+
+        private final Duration delay;
+
+        private SlowWebSearchTool(Duration delay) {
+            this.delay = delay;
+        }
+
+        @Tool(name = "web_search", value = "Slow web search test tool.")
+        public String webSearch(@P("Search query") String query) {
+            try {
+                Thread.sleep(delay.toMillis());
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return "status: error\nmessage: interrupted\n";
+            }
+            return "status: success\nresult: slow\n";
+        }
+    }
+
     private static final class RecordingChatModel implements StreamingChatModel {
 
         private final List<ChatRequest> requests = new ArrayList<>();
@@ -685,6 +980,14 @@ class LangGraph4jAgentChatServiceTest {
                 return "tool:" + toolMessage.text();
             }
             return message.type().name().toLowerCase() + ":" + message.toString();
+        }
+    }
+
+    private static final class HangingChatModel implements StreamingChatModel {
+
+        @Override
+        public void chat(ChatRequest request, StreamingChatResponseHandler handler) {
+            // Intentionally never completes; runtime timeouts should handle this.
         }
     }
 

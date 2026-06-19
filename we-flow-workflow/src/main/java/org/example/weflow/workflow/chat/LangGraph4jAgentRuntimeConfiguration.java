@@ -44,13 +44,13 @@ class LangGraph4jAgentRuntimeConfiguration {
         return DefaultAgentSpecs.leadAgentSpec(
                 subAgentDefinitions,
                 toolNames(toolService),
-                properties.leadMaxToolIterations()
+                properties.leadRuntimeLimits()
         );
     }
 
     @Bean("searchAgentSpec")
     AgentSpec searchAgentSpec(AgentRuntimeProperties properties) {
-        return DefaultAgentSpecs.searchAgentSpec(properties.searchMaxToolIterations());
+        return DefaultAgentSpecs.searchAgentSpec(properties.subagentRuntimeLimits());
     }
 
     @Bean

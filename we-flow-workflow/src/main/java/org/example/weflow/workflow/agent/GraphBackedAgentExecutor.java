@@ -49,6 +49,17 @@ public class GraphBackedAgentExecutor implements AgentExecutor {
                             .threadId(task.taskId())
                             .build()
             ).orElseThrow(() -> new IllegalStateException("Agent graph did not produce a final state."));
+            if (finalState.hasFailure()) {
+                return AgentResult.failed(
+                        task.taskId(),
+                        traceId,
+                        spec.definition().code(),
+                        finalState.failureCode().orElse("AGENT_EXECUTION_FAILED"),
+                        finalState.failureMessage(),
+                        startedAt,
+                        Instant.now()
+                );
+            }
             return AgentResult.success(task.taskId(), traceId, spec.definition().code(),
                     finalState.currentAssistantMessage(), startedAt, Instant.now());
         } catch (RuntimeException e) {
