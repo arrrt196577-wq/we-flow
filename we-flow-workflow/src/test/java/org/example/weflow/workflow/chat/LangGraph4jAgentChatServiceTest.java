@@ -33,6 +33,7 @@ import org.example.weflow.core.agent.AgentContext;
 import org.example.weflow.core.agent.AgentDefinition;
 import org.example.weflow.core.agent.AgentExecutor;
 import org.example.weflow.core.agent.AgentResult;
+import org.example.weflow.core.agent.AgentSpec;
 import org.example.weflow.core.agent.AgentTask;
 import org.example.weflow.core.agent.AgentType;
 import org.example.weflow.core.service.IChatService;
@@ -79,6 +80,20 @@ class LangGraph4jAgentChatServiceTest {
                         .hasSingleBean(IChatService.class)
                         .getBean(IChatService.class)
                         .isInstanceOf(LangGraph4jAgentChatService.class));
+    }
+
+    @Test
+    void agentMaxToolIterationsShouldComeFromProperties() {
+        contextRunner
+                .withPropertyValues(
+                        "we-flow.chat.engine=langgraph4j",
+                        "we-flow.agent.max-tool-iterations.lead=3",
+                        "we-flow.agent.max-tool-iterations.search=4"
+                )
+                .run(context -> {
+                    assertThat(context.getBean("leadAgentSpec", AgentSpec.class).maxToolIterations()).isEqualTo(3);
+                    assertThat(context.getBean("searchAgentSpec", AgentSpec.class).maxToolIterations()).isEqualTo(4);
+                });
     }
 
     @Test
@@ -131,6 +146,26 @@ class LangGraph4jAgentChatServiceTest {
         assertThat(systemPrompt(chatModel.requests().getFirst()))
                 .contains("Use web_search")
                 .contains("include source links");
+    }
+
+    @Test
+    void systemPromptShouldExposeWebFetchWhenToolIsAvailable() {
+        RecordingChatModel chatModel = new RecordingChatModel();
+        LangGraph4jAgentChatService service = service(chatModel, webFetchToolService("""
+                status: success
+                url: https://example.com
+                title: Example
+                contentLength: 7
+                truncated: false
+                content:
+                content
+                """));
+
+        stream(service, new ChatStreamRequest("read https://example.com", "conversation-fetch-tool", null));
+
+        assertThat(systemPrompt(chatModel.requests().getFirst()))
+                .contains("Use web_fetch")
+                .contains("untrusted external source material");
     }
 
     @Test
@@ -239,6 +274,20 @@ class LangGraph4jAgentChatServiceTest {
     }
 
     @Test
+    void unsupportedWebFetchToolShouldReturnFetchDisabledMessage() {
+        ToolCallingChatModel chatModel = new ToolCallingChatModel(List.of(
+                AiMessage.from(toolRequest("tool-call-fetch", "web_fetch", "{\"url\":\"https://example.com\"}"))
+        ));
+        LangGraph4jAgentChatService service = service(chatModel);
+
+        String response = stream(service, new ChatStreamRequest("read https://example.com", "conversation-fetch-disabled", null));
+
+        assertThat(response).contains("网页读取功能未启用");
+        assertThat(response).contains("we-flow.fetch.enabled=true");
+        assertThat(chatModel.requests()).hasSize(1);
+    }
+
+    @Test
     void unsupportedToolShouldReturnUnavailableToolMessage() {
         ToolCallingChatModel chatModel = new ToolCallingChatModel(List.of(
                 AiMessage.from(toolRequest("tool-call-missing", "missing_tool", "{}"))
@@ -290,6 +339,47 @@ class LangGraph4jAgentChatServiceTest {
         assertThat(response).isEqualTo("answer with source");
         assertThat(chatModel.requests()).hasSize(2);
         assertThat(toolResultText(chatModel.requests().get(1))).contains("status: success", "https://example.com/daniel");
+    }
+
+    @Test
+    void webFetchErrorShouldStopBeforeSecondModelCall() {
+        ToolCallingChatModel chatModel = new ToolCallingChatModel(List.of(
+                AiMessage.from(toolRequest("tool-call-fetch", "web_fetch", "{\"url\":\"https://example.com\"}"))
+        ));
+        LangGraph4jAgentChatService service = service(chatModel, webFetchToolService("""
+                status: error
+                code: FETCH_FAILED
+                message: Jina fetch failed
+                """));
+
+        String response = stream(service, new ChatStreamRequest("read https://example.com", "conversation-fetch-failed", null));
+
+        assertThat(response).contains("网页读取失败：Jina fetch failed");
+        assertThat(response).contains("不会继续基于该页面生成结论");
+        assertThat(chatModel.requests()).hasSize(1);
+    }
+
+    @Test
+    void webFetchSuccessShouldSendToolResultBackToModel() {
+        ToolCallingChatModel chatModel = new ToolCallingChatModel(List.of(
+                AiMessage.from(toolRequest("tool-call-fetch", "web_fetch", "{\"url\":\"https://example.com\"}")),
+                AiMessage.from("answer from fetched page")
+        ));
+        LangGraph4jAgentChatService service = service(chatModel, webFetchToolService("""
+                status: success
+                url: https://example.com
+                title: Example
+                contentLength: 7
+                truncated: false
+                content:
+                content
+                """));
+
+        String response = stream(service, new ChatStreamRequest("read https://example.com", "conversation-fetch-success", null));
+
+        assertThat(response).isEqualTo("answer from fetched page");
+        assertThat(chatModel.requests()).hasSize(2);
+        assertThat(toolResultText(chatModel.requests().get(1))).contains("status: success", "https://example.com");
     }
 
     @Test
@@ -347,6 +437,7 @@ class LangGraph4jAgentChatServiceTest {
                 .toolsFromObject(new WorkspaceFileTools(
                         new DefaultWorkspaceService(new WorkspaceProperties(workspaceRoot.toString()))))
                 .toolsFromObject(new TestWebSearchTool("status: success\ntotalResults: 0\n"))
+                .toolsFromObject(new TestWebFetchTool("status: success\nurl: https://example.com\ncontent:\ncontent\n"))
                 .toolsFromObject(new TaskDelegationTool(new InMemorySubAgentRegistry(defaultSubAgents())))
                 .build();
         AgentExecutor searchAgent = new GraphBackedAgentExecutor(
@@ -364,9 +455,10 @@ class LangGraph4jAgentChatServiceTest {
         assertThat(result.startedAt()).isNotNull();
         assertThat(result.completedAt()).isNotNull();
         assertThat(toolNames(chatModel.requests().getFirst()))
-                .containsExactlyInAnyOrder("find_files", "read_file", "list_dir", "web_search");
+                .containsExactlyInAnyOrder("find_files", "read_file", "list_dir", "web_search", "web_fetch");
         assertThat(systemPrompt(chatModel.requests().getFirst()))
                 .contains("read-only research subagent")
+                .contains("web_fetch")
                 .contains("Do NOT ask for clarification")
                 .contains("Recommended next steps for the lead agent")
                 .contains("Citations: Use `[citation:Title](URL)` format");
@@ -427,6 +519,12 @@ class LangGraph4jAgentChatServiceTest {
     private LC4jToolService webSearchToolService(String result) {
         return LC4jToolService.builder()
                 .toolsFromObject(new TestWebSearchTool(result))
+                .build();
+    }
+
+    private LC4jToolService webFetchToolService(String result) {
+        return LC4jToolService.builder()
+                .toolsFromObject(new TestWebFetchTool(result))
                 .build();
     }
 
@@ -532,6 +630,20 @@ class LangGraph4jAgentChatServiceTest {
 
         @Tool(name = "web_search", value = "Search the web for test data.")
         public String webSearch(@P("Search query") String query) {
+            return result;
+        }
+    }
+
+    private static final class TestWebFetchTool implements AgentTool {
+
+        private final String result;
+
+        private TestWebFetchTool(String result) {
+            this.result = result;
+        }
+
+        @Tool(name = "web_fetch", value = "Fetch web content for test data.")
+        public String webFetch(@P("URL") String url) {
             return result;
         }
     }

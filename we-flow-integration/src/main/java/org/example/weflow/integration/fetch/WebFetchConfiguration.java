@@ -1,4 +1,4 @@
-package org.example.weflow.integration.search;
+package org.example.weflow.integration.fetch;
 
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -12,31 +12,23 @@ import reactor.netty.http.client.HttpClient;
 import reactor.netty.transport.ProxyProvider;
 
 @Configuration(proxyBeanMethods = false)
-@EnableConfigurationProperties(WebSearchProperties.class)
-public class WebSearchConfiguration {
+@EnableConfigurationProperties(WebFetchProperties.class)
+public class WebFetchConfiguration {
 
     @Bean
-    @ConditionalOnMissingBean(WebSearchClient.class)
-    @ConditionalOnProperty(prefix = "we-flow.search", name = "enabled", havingValue = "true")
-    @ConditionalOnProperty(prefix = "we-flow.search", name = "provider", havingValue = "duckduckgo")
-    public WebSearchClient duckDuckGoWebSearchClient(WebSearchProperties properties) {
-        return new DuckDuckGoWebSearchClient(webSearchWebClientBuilder(properties), properties);
-    }
-
-    @Bean
-    @ConditionalOnMissingBean(WebSearchClient.class)
-    @ConditionalOnProperty(prefix = "we-flow.search", name = "enabled", havingValue = "true")
-    @ConditionalOnProperty(prefix = "we-flow.search", name = "provider", havingValue = "jina", matchIfMissing = true)
-    public WebSearchClient jinaWebSearchClient(WebSearchProperties properties) {
+    @ConditionalOnMissingBean(WebFetchClient.class)
+    @ConditionalOnProperty(prefix = "we-flow.fetch", name = "enabled", havingValue = "true")
+    @ConditionalOnProperty(prefix = "we-flow.fetch", name = "provider", havingValue = "jina", matchIfMissing = true)
+    public WebFetchClient jinaWebFetchClient(WebFetchProperties properties) {
         if (!StringUtils.hasText(properties.jina().apiKey())) {
-            throw new IllegalStateException("Missing property: we-flow.search.jina.api-key");
+            throw new IllegalStateException("Missing property: we-flow.fetch.jina.api-key");
         }
-        return new JinaWebSearchClient(webSearchWebClientBuilder(properties), properties);
+        return new JinaWebFetchClient(webFetchWebClientBuilder(properties), properties);
     }
 
-    private WebClient.Builder webSearchWebClientBuilder(WebSearchProperties properties) {
+    private WebClient.Builder webFetchWebClientBuilder(WebFetchProperties properties) {
         HttpClient httpClient = HttpClient.create();
-        WebSearchProperties.ProxyProperties proxy = properties.proxy();
+        WebFetchProperties.ProxyProperties proxy = properties.proxy();
         if (proxy.isEnabled()) {
             httpClient = httpClient.proxy(proxySpec -> {
                 ProxyProvider.Builder proxyBuilder = proxySpec.type(ProxyProvider.Proxy.HTTP)

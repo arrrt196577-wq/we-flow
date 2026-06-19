@@ -2,6 +2,9 @@ package org.example.weflow.agent.tool;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import dev.langchain4j.agent.tool.Tool;
 import java.time.Duration;
 import java.util.Arrays;
@@ -15,6 +18,7 @@ import org.example.weflow.integration.search.WebSearchRequest;
 import org.example.weflow.integration.search.WebSearchResponse;
 import org.example.weflow.integration.search.WebSearchResult;
 import org.junit.jupiter.api.Test;
+import org.slf4j.LoggerFactory;
 
 class WebSearchToolsTest {
 
@@ -69,6 +73,39 @@ class WebSearchToolsTest {
         assertThat(result).contains("snippet: Spring Boot docs");
     }
 
+    @Test
+    void webSearchShouldLogSuccessfulResultsInSingleLineFormat() {
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        Logger logger = (Logger) LoggerFactory.getLogger(WebSearchTools.class);
+        appender.start();
+        logger.addAppender(appender);
+        try {
+            WebSearchTools tools = tools(request -> new WebSearchResponse(request.query(), List.of(
+                    new WebSearchResult(
+                            "Spring \"Boot\"",
+                            "https://spring.io/projects/spring-boot",
+                            "Line one\nLine two")
+            )), 5);
+
+            tools.webSearch("spring boot", 5);
+
+            assertThat(appender.list)
+                    .extracting(ILoggingEvent::getFormattedMessage)
+                    .anySatisfy(message -> {
+                        assertThat(message).startsWith("Tool result: web_search status=success ");
+                        assertThat(message).contains("query=spring boot");
+                        assertThat(message).contains("totalResults=1");
+                        assertThat(message).contains("results=[{rank=1, title=\"Spring \\\"Boot\\\"\"");
+                        assertThat(message).contains("url=\"https://spring.io/projects/spring-boot\"");
+                        assertThat(message).contains("snippet=\"Line one Line two\"");
+                        assertThat(message).doesNotContain("\n");
+                    });
+        } finally {
+            logger.detachAppender(appender);
+            appender.stop();
+        }
+    }
+
     private WebSearchTools tools(WebSearchClient client, int maxResults) {
         return new WebSearchTools(client, new WebSearchProperties(
                 true,
@@ -77,6 +114,7 @@ class WebSearchToolsTest {
                 Duration.ofSeconds(10),
                 "wt-wt",
                 "moderate",
+                null,
                 null));
     }
 }
