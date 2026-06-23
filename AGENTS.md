@@ -7,7 +7,7 @@ repository.
 
 - This is a Maven multi-module Java project.
 - Java version: 21.
-- Spring Boot version: 3.3.6.
+- Spring Boot version: 3.5.14.
 - Root module: `we-flow`.
 - Frontend code location: `F:\agent-project\we-flow-front`.
 - Modules:
@@ -45,6 +45,8 @@ mvn -pl we-flow-app -am clean package
 - Follow the existing module boundaries and code style.
 - Before changing code, inspect the relevant module `pom.xml`, package layout,
   and nearby implementations.
+- For complex functions or methods, especially those longer than about 10 lines,
+  add a brief comment summarizing their purpose.
 - Existing database table structures are documented in
   `introduction/database-schema.md`; read this file when database information is
   needed.

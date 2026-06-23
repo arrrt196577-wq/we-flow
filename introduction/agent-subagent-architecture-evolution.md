@@ -9,9 +9,9 @@ evolution path is to make the runtime "DeerFlow-like" first:
 - runtime creates graphs from that configuration;
 - graph construction details are centralized in one factory.
 
-With this shape, future migration toward a DeerFlow-style `create_agent()`
-mechanism can mostly happen inside `AgentGraphFactory`, without broad business
-code changes.
+With this shape, the explicit graph remains the primary runtime representation.
+Future evolution should happen by keeping graph construction centralized while
+moving cross-cutting business semantics into middleware.
 
 ## Core Direction
 
@@ -24,6 +24,8 @@ code changes.
 - The lead agent delegates work to subagents through the `delegate_task` tool.
 - Subagents should be independent compiled graphs, not simple synchronous
   placeholder executors.
+- Explicit graph topology should remain visible and intentional at the runtime
+  layer; the goal is not to replace it with an opaque agent builder.
 
 ## Core Interfaces
 
@@ -138,17 +140,30 @@ Candidate capabilities include:
 
 This phase moves the architecture closer to DeerFlow's middleware chain model.
 
-### Phase 5: Replace The Underlying Graph Builder
+### Phase 5: Business Semantic Middleware
 
-When LangGraph4j provides a more mature `create_agent()` capability, or when the
-internal factory abstraction becomes stable enough, the graph builder can be
-replaced behind the existing interfaces:
+Keep explicit graph construction as the stable runtime foundation. Later
+evolution should focus on moving business cross-cutting semantics into
+middleware instead of replacing the graph builder.
+
+Candidate middleware semantics include:
+
+- task planning policy;
+- delegation policy;
+- context compression and handoff rules;
+- tool selection hints;
+- business approval gates;
+- domain-specific tracing tags;
+- result summarization and normalization.
+
+The stable contract should remain:
 
 ```text
 AgentSpec remains unchanged
 SubAgentRegistry remains unchanged
 delegate_task remains unchanged
-AgentGraphFactory internal implementation changes
+AgentGraphFactory continues to build explicit graphs
+business cross-cutting semantics move into middleware
 ```
 
 ## Recommended First Version
@@ -178,8 +193,8 @@ points for later evolution.
 - `simple_task_subagent`, web search prompts, and tool loop policies are no
   longer mixed inside `AgentGraphFactory`.
 - New agents and subagents do not need repeated graph node and edge code.
-- Future migration toward DeerFlow-style runtime construction is concentrated in
-  `AgentGraphFactory`.
+- Future evolution can keep explicit graph construction stable while moving
+  business cross-cutting semantics into middleware.
 - Lead agent and subagent responsibilities become clearer.
 - Permission strategy, tool access, and runtime behavior become easier to
   reason about and evolve.
