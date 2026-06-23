@@ -22,11 +22,19 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executor;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
 import org.bsc.langgraph4j.langchain4j.tool.LC4jToolService;
 import org.example.weflow.agent.subagent.InMemorySubAgentRegistry;
+import org.example.weflow.agent.subagent.SubAgentRegistry;
 import org.example.weflow.agent.tool.AgentTool;
 import org.example.weflow.agent.tool.TaskDelegationTool;
 import org.example.weflow.agent.tool.WorkspaceFileTools;
@@ -236,7 +244,7 @@ class LangGraph4jAgentChatServiceTest {
     }
 
     @Test
-    void emitsFinalThinkingBeforeAnswerContent() {
+    void emitsAnswerContentBeforeFinalThinking() {
         ToolCallingChatModel chatModel = new ToolCallingChatModel(List.of(AiMessage.builder()
                 .text("final answer")
                 .thinking("reasoning trail")
@@ -246,9 +254,114 @@ class LangGraph4jAgentChatServiceTest {
         List<ChatStreamChunk> chunks = streamChunks(service, new ChatStreamRequest("hello", "conversation-thinking", null));
 
         assertThat(chunks).extracting(ChatStreamChunk::type)
-                .containsExactly(ChatStreamChunk.Type.REASONING, ChatStreamChunk.Type.CONTENT);
+                .containsExactly(ChatStreamChunk.Type.CONTENT, ChatStreamChunk.Type.REASONING);
         assertThat(chunks).extracting(ChatStreamChunk::content)
-                .containsExactly("reasoning trail", "final answer");
+                .containsExactly("final answer", "reasoning trail");
+    }
+
+    @Test
+    void streamsLeadContentAsMultipleChunksWithoutFinalDuplicate() {
+        LangGraph4jAgentChatService service = service(new MultiChunkChatModel("lead ", "answer"));
+
+        List<ChatStreamChunk> chunks = streamChunks(service, new ChatStreamRequest("hello", "conversation-multi-chunk", null));
+
+        assertThat(chunks).extracting(ChatStreamChunk::type)
+                .containsExactly(ChatStreamChunk.Type.CONTENT, ChatStreamChunk.Type.CONTENT);
+        assertThat(chunks).extracting(ChatStreamChunk::content)
+                .containsExactly("lead ", "answer");
+    }
+
+    @Test
+    void fallsBackToFinalContentWhenNoContentWasStreamed() {
+        ToolCallingChatModel chatModel = new ToolCallingChatModel(List.of(
+                AiMessage.from(toolRequest("tool-call-missing", "missing_tool", "{}"))
+        ));
+        LangGraph4jAgentChatService service = service(chatModel);
+
+        List<ChatStreamChunk> chunks = streamChunks(service, new ChatStreamRequest("use missing tool", "conversation-fallback", null));
+
+        assertThat(chunks).extracting(ChatStreamChunk::type)
+                .containsExactly(ChatStreamChunk.Type.CONTENT);
+        assertThat(chunks.getFirst().content()).contains("missing_tool");
+    }
+
+    @Test
+    void graphBackedSubAgentContentDoesNotStreamAsLeadContent() {
+        ToolCallingChatModel chatModel = new ToolCallingChatModel(List.of(
+                AiMessage.from(toolRequest("tool-call-delegate", "delegate_task",
+                        "{\"subAgentCode\":\"search_agent\",\"taskType\":\"general_task\","
+                                + "\"objective\":\"verify delegation\",\"input\":\"abc\"}")),
+                AiMessage.from("subagent should stay internal"),
+                AiMessage.from("lead final")
+        ));
+        MutableSubAgentRegistry subAgentRegistry = new MutableSubAgentRegistry();
+        LC4jToolService toolService = LC4jToolService.builder()
+                .toolsFromObject(new TaskDelegationTool(subAgentRegistry))
+                .build();
+        AgentGraphFactory graphFactory = new AgentGraphFactory(chatModel, toolService);
+        AgentExecutor subAgent = new GraphBackedAgentExecutor(DefaultAgentSpecs.searchAgentSpec(), graphFactory);
+        subAgentRegistry.register(subAgent);
+        LangGraph4jAgentChatService service = service(
+                graphFactory,
+                toolService,
+                List.of(subAgent),
+                DefaultAgentSpecs.defaultLeadRuntimeLimits(),
+                Runnable::run
+        );
+
+        List<ChatStreamChunk> chunks = streamChunks(service, new ChatStreamRequest("delegate", "conversation-subagent-isolation", null));
+
+        assertThat(chunks).extracting(ChatStreamChunk::type)
+                .containsExactly(ChatStreamChunk.Type.CONTENT);
+        assertThat(chunks.getFirst().content()).isEqualTo("lead final");
+        assertThat(chunks).extracting(ChatStreamChunk::content)
+                .doesNotContain("subagent should stay internal");
+    }
+
+    @Test
+    void streamReturnsBeforeModelCompletesAndEmitsPartialContent() throws Exception {
+        DelayedStreamingChatModel chatModel = new DelayedStreamingChatModel();
+        LC4jToolService toolService = LC4jToolService.builder().build();
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        LangGraph4jAgentChatService service = service(
+                new AgentGraphFactory(chatModel, toolService),
+                toolService,
+                List.of(),
+                DefaultAgentSpecs.defaultLeadRuntimeLimits(),
+                executor
+        );
+        List<ChatStreamChunk> chunks = new ArrayList<>();
+        AtomicReference<Throwable> error = new AtomicReference<>();
+        AtomicBoolean completed = new AtomicBoolean(false);
+        CountDownLatch serviceCompleted = new CountDownLatch(1);
+
+        try {
+            service.stream(
+                    new ChatStreamRequest("hello", "conversation-async-stream", null),
+                    chunks::add,
+                    error::set,
+                    () -> {
+                        completed.set(true);
+                        serviceCompleted.countDown();
+                    }
+            );
+
+            assertThat(chatModel.partialSent().await(1, TimeUnit.SECONDS)).isTrue();
+            assertThat(completed.get()).isFalse();
+            assertThat(chunks).extracting(ChatStreamChunk::content)
+                    .containsExactly("partial");
+
+            chatModel.allowComplete();
+
+            assertThat(chatModel.completed().await(1, TimeUnit.SECONDS)).isTrue();
+            assertThat(serviceCompleted.await(1, TimeUnit.SECONDS)).isTrue();
+            assertThat(error.get()).isNull();
+            assertThat(completed.get()).isTrue();
+            assertThat(chunks).extracting(ChatStreamChunk::content)
+                    .containsExactly("partial");
+        } finally {
+            executor.shutdownNow();
+        }
     }
 
     @Test
@@ -753,15 +866,32 @@ class LangGraph4jAgentChatServiceTest {
             List<AgentExecutor> subAgents,
             AgentRuntimeLimits leadRuntimeLimits
     ) {
-        return new LangGraph4jAgentChatService(
+        return service(
                 new AgentGraphFactory(chatModel, toolService),
+                toolService,
+                subAgents,
+                leadRuntimeLimits,
+                Runnable::run
+        );
+    }
+
+    private LangGraph4jAgentChatService service(
+            AgentGraphFactory graphFactory,
+            LC4jToolService toolService,
+            List<AgentExecutor> subAgents,
+            AgentRuntimeLimits leadRuntimeLimits,
+            Executor executor
+    ) {
+        return new LangGraph4jAgentChatService(
+                graphFactory,
                 DefaultAgentSpecs.leadAgentSpec(
                         subAgents.stream()
                                 .map(AgentExecutor::definition)
                                 .toList(),
                         toolNames(toolService),
                         leadRuntimeLimits
-                )
+                ),
+                executor
         );
     }
 
@@ -988,6 +1118,85 @@ class LangGraph4jAgentChatServiceTest {
         @Override
         public void chat(ChatRequest request, StreamingChatResponseHandler handler) {
             // Intentionally never completes; runtime timeouts should handle this.
+        }
+    }
+
+    private static final class MultiChunkChatModel implements StreamingChatModel {
+
+        private final List<String> chunks;
+
+        private MultiChunkChatModel(String... chunks) {
+            this.chunks = List.of(chunks);
+        }
+
+        @Override
+        public void chat(ChatRequest request, StreamingChatResponseHandler handler) {
+            chunks.forEach(handler::onPartialResponse);
+            handler.onCompleteResponse(ChatResponse.builder()
+                    .aiMessage(AiMessage.from(String.join("", chunks)))
+                    .build());
+        }
+    }
+
+    private static final class DelayedStreamingChatModel implements StreamingChatModel {
+
+        private final CountDownLatch partialSent = new CountDownLatch(1);
+        private final CountDownLatch allowComplete = new CountDownLatch(1);
+        private final CountDownLatch completed = new CountDownLatch(1);
+
+        @Override
+        public void chat(ChatRequest request, StreamingChatResponseHandler handler) {
+            handler.onPartialResponse("partial");
+            partialSent.countDown();
+            try {
+                if (!allowComplete.await(2, TimeUnit.SECONDS)) {
+                    handler.onError(new IllegalStateException("timed out waiting for test completion"));
+                    return;
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                handler.onError(e);
+                return;
+            }
+            handler.onCompleteResponse(ChatResponse.builder()
+                    .aiMessage(AiMessage.from("partial"))
+                    .build());
+            completed.countDown();
+        }
+
+        CountDownLatch partialSent() {
+            return partialSent;
+        }
+
+        void allowComplete() {
+            allowComplete.countDown();
+        }
+
+        CountDownLatch completed() {
+            return completed;
+        }
+    }
+
+    private static final class MutableSubAgentRegistry implements SubAgentRegistry {
+
+        private final List<AgentExecutor> executors = new ArrayList<>();
+
+        private void register(AgentExecutor executor) {
+            executors.add(executor);
+        }
+
+        @Override
+        public Optional<AgentExecutor> findByCode(String code) {
+            return executors.stream()
+                    .filter(executor -> executor.definition().code().equals(code))
+                    .findFirst();
+        }
+
+        @Override
+        public List<AgentDefinition> listDefinitions() {
+            return executors.stream()
+                    .map(AgentExecutor::definition)
+                    .toList();
         }
     }
 

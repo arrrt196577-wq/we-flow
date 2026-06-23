@@ -32,6 +32,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.function.Consumer;
 import java.util.stream.Collectors;
 import lombok.extern.slf4j.Slf4j;
 import org.bsc.langgraph4j.CompileConfig;
@@ -47,6 +48,7 @@ import org.bsc.langgraph4j.prebuilt.MessagesState;
 import org.example.weflow.core.agent.AgentRuntimeLimits;
 import org.example.weflow.core.agent.AgentSpec;
 import org.example.weflow.core.agent.AgentType;
+import org.example.weflow.core.service.dto.ChatStreamChunk;
 
 @Slf4j
 public class AgentGraphFactory {
@@ -68,10 +70,15 @@ public class AgentGraphFactory {
 
     private final StreamingChatModel streamingChatModel;
     private final LC4jToolService toolService;
+    private final AgentStreamSinkRegistry sinkRegistry = new AgentStreamSinkRegistry();
 
     public AgentGraphFactory(StreamingChatModel streamingChatModel, LC4jToolService toolService) {
         this.streamingChatModel = streamingChatModel;
         this.toolService = toolService;
+    }
+
+    public AgentStreamSinkRegistry sinkRegistry() {
+        return sinkRegistry;
     }
 
     public CompiledGraph<AgentThreadState> create(AgentSpec spec) {
@@ -83,7 +90,8 @@ public class AgentGraphFactory {
             );
 
             graph.addNode(TURN_INITIALIZATION_NODE, node_async(runtime::initializeTurn))
-                    .addNode(MODEL_NODE, node_async(runtime::modelNode))
+                    .addNode(MODEL_NODE,
+                            org.bsc.langgraph4j.action.AsyncNodeActionWithConfig.node_async(runtime::modelNode))
                     .addNode(TOOL_NODE, node_async(runtime::toolNode))
                     .addEdge(START, TURN_INITIALIZATION_NODE)
                     .addEdge(TURN_INITIALIZATION_NODE, MODEL_NODE)
@@ -128,7 +136,7 @@ public class AgentGraphFactory {
             return update;
         }
 
-        private Map<String, Object> modelNode(AgentThreadState state) {
+        private Map<String, Object> modelNode(AgentThreadState state, RunnableConfig config) {
             Optional<Map<String, Object>> failure = failureBeforeModel(state);
             if (failure.isPresent()) {
                 return failure.get();
@@ -142,7 +150,10 @@ public class AgentGraphFactory {
             boolean timeoutUsesOverallDeadline = timeoutUsesOverallDeadline(state, effectiveTimeout);
             AiMessage aiMessage;
             try {
-                aiMessage = chat(chatRequest, effectiveTimeout);
+                Consumer<ChatStreamChunk> sink = config.threadId()
+                        .flatMap(sinkRegistry::sink)
+                        .orElse(null);
+                aiMessage = chat(chatRequest, effectiveTimeout, sink);
             } catch (RuntimeException e) {
                 if (isTimeout(e)) {
                     return timeoutUsesOverallDeadline
@@ -578,7 +589,7 @@ public class AgentGraphFactory {
         }
     }
 
-    private AiMessage chat(ChatRequest chatRequest, Duration timeout) {
+    private AiMessage chat(ChatRequest chatRequest, Duration timeout, Consumer<ChatStreamChunk> contentSink) {
         CompletableFuture<AiMessage> responseFuture = new CompletableFuture<>();
         StringBuilder responseBuilder = new StringBuilder();
         StringBuilder thinkingBuilder = new StringBuilder();
@@ -587,6 +598,9 @@ public class AgentGraphFactory {
             @Override
             public void onPartialResponse(String partialResponse) {
                 responseBuilder.append(partialResponse);
+                if (contentSink != null && partialResponse != null && !partialResponse.isEmpty()) {
+                    contentSink.accept(ChatStreamChunk.content(partialResponse));
+                }
             }
 
             @Override
