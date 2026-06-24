@@ -16,6 +16,8 @@ public class AgentThreadState extends MessagesState<ChatMessage> {
     public static final String FAILURE_CODE = "failureCode";
     public static final String FAILURE_MESSAGE = "failureMessage";
     public static final String LEAD_TOOL_CALL_COUNTS = "leadToolCallCounts";
+    public static final String OUTPUT_VALIDATION_RETRY_COUNT = "outputValidationRetryCount";
+    public static final String OUTPUT_VALIDATION_RETRY_REQUESTED = "outputValidationRetryRequested";
 
     public AgentThreadState(Map<String, Object> initData) {
         super(initData);
@@ -51,6 +53,16 @@ public class AgentThreadState extends MessagesState<ChatMessage> {
 
     public boolean hasFailure() {
         return failureCode().isPresent();
+    }
+
+    public int outputValidationRetryCount() {
+        return intValue(OUTPUT_VALIDATION_RETRY_COUNT);
+    }
+
+    public boolean outputValidationRetryRequested() {
+        return this.<Object>value(OUTPUT_VALIDATION_RETRY_REQUESTED)
+                .map(this::booleanValue)
+                .orElse(false);
     }
 
     public Map<String, Integer> leadToolCallCounts() {
@@ -91,5 +103,15 @@ public class AgentThreadState extends MessagesState<ChatMessage> {
             return Long.parseLong(text);
         }
         return 0L;
+    }
+
+    private boolean booleanValue(Object value) {
+        if (value instanceof Boolean bool) {
+            return bool;
+        }
+        if (value instanceof String text && !text.isBlank()) {
+            return Boolean.parseBoolean(text);
+        }
+        return false;
     }
 }

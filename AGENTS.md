@@ -48,7 +48,7 @@ mvn -pl we-flow-app -am clean package
 - For complex functions or methods, especially those longer than about 10 lines,
   add a brief comment summarizing their purpose.
 - Existing database table structures are documented in
-  `introduction/database-schema.md`; read this file when database information is
+  `docs/database-schema.md`; read this file when database information is
   needed.
 - When using DEER FLOW as a reference, read its local project code at
   `F:\deer-flow` instead of reading it from GitHub.
