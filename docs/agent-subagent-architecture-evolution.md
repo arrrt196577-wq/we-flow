@@ -27,6 +27,30 @@ moving cross-cutting business semantics into middleware.
 - Explicit graph topology should remain visible and intentional at the runtime
   layer; the goal is not to replace it with an opaque agent builder.
 
+## Subagent Taxonomy
+
+There are exactly two subagent types, divided by capability and blast radius
+rather than by business role:
+
+- `search_agent` — the **research type**. Read-only investigation: web search,
+  web fetch, and workspace file discovery. It never writes files, never runs
+  commands, and never delegates. Safe to run in parallel and on untrusted input.
+- `implement_agent` — the **execution type**. It reads, edits files
+  (`apply_patch` / `write_file`), and runs allowlisted commands
+  (`run_command`). It carries write/execute blast radius and is gated
+  accordingly.
+
+This is deliberately close to DeerFlow's two built-in subagents
+(`general-purpose` + `bash`), but with a stricter read-only vs. write boundary
+as the dividing line.
+
+Roles such as planner and reporter are **not** separate subagents. Planning and
+report writing are handled by the lead agent's orchestration plus reusable
+**skills** (domain templates and methodology loaded on demand). New domain
+behavior is added as a skill or a config-defined custom agent, not as a new
+hardcoded role subagent. This keeps the subagent surface small and the topology
+stable.
+
 ## Core Interfaces
 
 ### AgentSpec
@@ -87,7 +111,9 @@ The initial configured agents can be:
 ### Phase 2: Graph-Backed Subagents
 
 Replace the current `simple_task_subagent` placeholder with real compiled
-subagent graphs.
+subagent graphs. These two agents are the **complete subagent taxonomy** (see
+"Subagent Taxonomy" above); do not add role-specific subagents such as planner
+or reporter.
 
 `search_agent` should focus on read-only investigation:
 
