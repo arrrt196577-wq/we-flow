@@ -93,6 +93,78 @@ class MiddlewareManagerTest {
     }
 
     @Test
+    void emptyRunChainCallsTerminal() {
+        MiddlewareManager manager = MiddlewareManager.empty();
+        AgentThreadState expected = new AgentThreadState(Map.of());
+
+        AgentThreadState result = manager.aroundRun(runContext(), context -> expected);
+
+        assertThat(result).isSameAs(expected);
+    }
+
+    @Test
+    void finishAroundMiddlewareUsesOnionOrder() {
+        List<String> order = new ArrayList<>();
+        WeflowMiddleware first = new WeflowMiddleware() {
+            @Override
+            public Map<String, Object> aroundFinish(FinishContext context, FinishCall next) {
+                order.add("first-before");
+                Map<String, Object> result = next.call(context);
+                order.add("first-after");
+                return result;
+            }
+        };
+        WeflowMiddleware second = new WeflowMiddleware() {
+            @Override
+            public Map<String, Object> aroundFinish(FinishContext context, FinishCall next) {
+                order.add("second-before");
+                Map<String, Object> result = next.call(context);
+                order.add("second-after");
+                return result;
+            }
+        };
+        MiddlewareManager manager = new MiddlewareManager(List.of(first, second));
+
+        Map<String, Object> result = manager.aroundFinish(finishContext(), context -> {
+            order.add("terminal");
+            return Map.of("done", true);
+        });
+
+        assertThat(result).containsEntry("done", true);
+        assertThat(order).containsExactly(
+                "first-before",
+                "second-before",
+                "terminal",
+                "second-after",
+                "first-after"
+        );
+    }
+
+    @Test
+    void afterFinishStopsAtFirstNonContinueResult() {
+        WeflowMiddleware pass = new WeflowMiddleware() {
+        };
+        WeflowMiddleware stop = new WeflowMiddleware() {
+            @Override
+            public MiddlewareResult afterFinish(FinishContext context) {
+                return MiddlewareResult.fail("STOP", "stop here");
+            }
+        };
+        WeflowMiddleware later = new WeflowMiddleware() {
+            @Override
+            public MiddlewareResult afterFinish(FinishContext context) {
+                return MiddlewareResult.fail("SHOULD_NOT_RUN", "later");
+            }
+        };
+        MiddlewareManager manager = new MiddlewareManager(List.of(pass, stop, later));
+
+        MiddlewareResult result = manager.afterFinish(finishContext()).orElseThrow();
+
+        assertThat(result.type()).isEqualTo(MiddlewareResult.Type.FAIL);
+        assertThat(result.failureCode()).isEqualTo("STOP");
+    }
+
+    @Test
     void failureUpdateUsesControlledFailureTextExactly() {
         MiddlewareManager manager = MiddlewareManager.empty();
 
@@ -109,6 +181,14 @@ class MiddlewareManagerTest {
                 .containsEntry(AgentThreadState.CURRENT_ASSISTANT_THINKING, "");
         assertThat(((List<?>) update.get(MessagesState.MESSAGES_STATE)).getFirst())
                 .isEqualTo(AiMessage.from(expected));
+    }
+
+    private AgentRunContext runContext() {
+        return new AgentRunContext(agentSpec(), "thread-1");
+    }
+
+    private FinishContext finishContext() {
+        return new FinishContext(runContext(), new AgentThreadState(Map.of()), "output");
     }
 
     private ModelCallContext modelContext() {

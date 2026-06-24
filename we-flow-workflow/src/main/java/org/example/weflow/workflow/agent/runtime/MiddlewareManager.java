@@ -21,8 +21,16 @@ public final class MiddlewareManager {
         return new MiddlewareManager(List.of());
     }
 
-    public Optional<MiddlewareResult> onRunStart(AgentRunContext context) {
-        return firstBlocking(middleware -> middleware.onRunStart(context));
+    public Optional<MiddlewareResult> beforeRun(AgentRunContext context) {
+        return firstBlocking(middleware -> middleware.beforeRun(context));
+    }
+
+    public AgentThreadState aroundRun(AgentRunContext context, WeflowMiddleware.RunCall terminal) {
+        return invokeRunMiddlewareChain(0, context, terminal);
+    }
+
+    public Optional<MiddlewareResult> afterRun(AgentRunContext context) {
+        return firstBlocking(middleware -> middleware.afterRun(context));
     }
 
     public Optional<MiddlewareResult> beforeModel(ModelCallContext context) {
@@ -53,8 +61,12 @@ public final class MiddlewareManager {
         return firstBlocking(middleware -> middleware.beforeFinish(context));
     }
 
-    public Optional<MiddlewareResult> onRunEnd(AgentRunContext context) {
-        return firstBlocking(middleware -> middleware.onRunEnd(context));
+    public Map<String, Object> aroundFinish(FinishContext context, WeflowMiddleware.FinishCall terminal) {
+        return invokeFinishMiddlewareChain(0, context, terminal);
+    }
+
+    public Optional<MiddlewareResult> afterFinish(FinishContext context) {
+        return firstBlocking(middleware -> middleware.afterFinish(context));
     }
 
     public Map<String, Object> failureUpdate(String code, String message) {
@@ -83,6 +95,36 @@ public final class MiddlewareManager {
             }
         }
         return Optional.empty();
+    }
+
+    private AgentThreadState invokeRunMiddlewareChain(
+            int index,
+            AgentRunContext context,
+            WeflowMiddleware.RunCall terminal
+    ) {
+        if (index >= middlewares.size()) {
+            return terminal.call(context);
+        }
+        WeflowMiddleware middleware = middlewares.get(index);
+        return middleware.aroundRun(
+                context,
+                nextContext -> invokeRunMiddlewareChain(index + 1, nextContext, terminal)
+        );
+    }
+
+    private Map<String, Object> invokeFinishMiddlewareChain(
+            int index,
+            FinishContext context,
+            WeflowMiddleware.FinishCall terminal
+    ) {
+        if (index >= middlewares.size()) {
+            return terminal.call(context);
+        }
+        WeflowMiddleware middleware = middlewares.get(index);
+        return middleware.aroundFinish(
+                context,
+                nextContext -> invokeFinishMiddlewareChain(index + 1, nextContext, terminal)
+        );
     }
 
     private AiMessage invokeModelMiddlewareChain(
