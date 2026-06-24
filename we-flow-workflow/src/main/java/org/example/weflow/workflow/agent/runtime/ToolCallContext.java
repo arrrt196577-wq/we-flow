@@ -12,7 +12,9 @@ public record ToolCallContext(
         AgentRunContext runContext,
         AgentThreadState state,
         List<ToolExecutionRequest> toolRequests,
+        // 工具调用上下文
         InvocationContext invocationContext,
+        // 子Agent剩余时间
         Optional<Duration> remainingOverallTimeout
 ) {
 

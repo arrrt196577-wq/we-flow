@@ -48,7 +48,7 @@ public final class ToolRuntime {
                 invocationContext(state),
                 remainingOverallTimeout
         );
-        return middlewareManager.aroundTool(context, this::execute);
+        return middlewareManager.aroundTool(context, this::executeToolService);
     }
 
     @SuppressWarnings("unchecked")
@@ -80,12 +80,13 @@ public final class ToolRuntime {
                 .build();
     }
 
-    private Command execute(ToolCallContext context) {
+    private Command executeToolService(ToolCallContext context) {
         CompletableFuture<Command> commandFuture = toolService.execute(
                 context.toolRequests(),
                 context.invocationContext(),
                 MessagesState.MESSAGES_STATE
         );
+        // 剩余时间
         Optional<Duration> remainingOverallTimeout = context.remainingOverallTimeout();
         if (remainingOverallTimeout.isEmpty()) {
             return commandFuture.join();

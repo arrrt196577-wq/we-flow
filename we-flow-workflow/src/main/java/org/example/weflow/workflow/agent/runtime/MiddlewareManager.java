@@ -30,7 +30,7 @@ public final class MiddlewareManager {
     }
 
     public AiMessage aroundModel(ModelCallContext context, WeflowMiddleware.ModelCall terminal) {
-        return aroundModel(0, context, terminal);
+        return invokeModelMiddlewareChain(0, context, terminal);
     }
 
     public Optional<MiddlewareResult> afterModel(ModelCallContext context, AiMessage aiMessage) {
@@ -42,7 +42,7 @@ public final class MiddlewareManager {
     }
 
     public Command aroundTool(ToolCallContext context, WeflowMiddleware.ToolCall terminal) {
-        return aroundTool(0, context, terminal);
+        return invokeToolMiddlewareChain(0, context, terminal);
     }
 
     public Optional<MiddlewareResult> afterTool(ToolCallContext context, Command command) {
@@ -85,7 +85,7 @@ public final class MiddlewareManager {
         return Optional.empty();
     }
 
-    private AiMessage aroundModel(
+    private AiMessage invokeModelMiddlewareChain(
             int index,
             ModelCallContext context,
             WeflowMiddleware.ModelCall terminal
@@ -94,10 +94,13 @@ public final class MiddlewareManager {
             return terminal.call(context);
         }
         WeflowMiddleware middleware = middlewares.get(index);
-        return middleware.aroundModel(context, nextContext -> aroundModel(index + 1, nextContext, terminal));
+        return middleware.aroundModel(
+                context,
+                nextContext -> invokeModelMiddlewareChain(index + 1, nextContext, terminal)
+        );
     }
 
-    private Command aroundTool(
+    private Command invokeToolMiddlewareChain(
             int index,
             ToolCallContext context,
             WeflowMiddleware.ToolCall terminal
@@ -106,6 +109,9 @@ public final class MiddlewareManager {
             return terminal.call(context);
         }
         WeflowMiddleware middleware = middlewares.get(index);
-        return middleware.aroundTool(context, nextContext -> aroundTool(index + 1, nextContext, terminal));
+        return middleware.aroundTool(
+                context,
+                nextContext -> invokeToolMiddlewareChain(index + 1, nextContext, terminal)
+        );
     }
 }

@@ -48,7 +48,7 @@ public final class ModelRuntime {
             Consumer<ChatStreamChunk> partialSink
     ) {
         ModelCallContext context = new ModelCallContext(runContext, state, request, timeout, partialSink);
-        return middlewareManager.aroundModel(context, this::chat);
+        return middlewareManager.aroundModel(context, this::callChatModel);
     }
 
     public Duration effectiveLlmTimeout(AgentSpec spec, AgentThreadState state) {
@@ -84,7 +84,7 @@ public final class ModelRuntime {
         return current instanceof TimeoutException;
     }
 
-    private AiMessage chat(ModelCallContext context) {
+    private AiMessage callChatModel(ModelCallContext context) {
         CompletableFuture<AiMessage> responseFuture = new CompletableFuture<>();
         StringBuilder responseBuilder = new StringBuilder();
         StringBuilder thinkingBuilder = new StringBuilder();

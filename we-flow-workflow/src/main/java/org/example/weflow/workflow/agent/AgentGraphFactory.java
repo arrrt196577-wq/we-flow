@@ -40,8 +40,12 @@ import org.example.weflow.core.agent.AgentSpec;
 import org.example.weflow.core.agent.AgentType;
 import org.example.weflow.core.service.dto.ChatStreamChunk;
 import org.example.weflow.workflow.agent.runtime.AgentRunContext;
+import org.example.weflow.workflow.agent.runtime.CitationValidationMiddleware;
+import org.example.weflow.workflow.agent.runtime.FinishContext;
 import org.example.weflow.workflow.agent.runtime.MiddlewareManager;
+import org.example.weflow.workflow.agent.runtime.MiddlewareResult;
 import org.example.weflow.workflow.agent.runtime.ModelRuntime;
+import org.example.weflow.workflow.agent.runtime.SearchAgentOutputValidationMiddleware;
 import org.example.weflow.workflow.agent.runtime.ToolRuntime;
 import org.example.weflow.workflow.agent.runtime.WeflowMiddleware;
 
@@ -51,10 +55,12 @@ public class AgentGraphFactory {
     static final String TURN_INITIALIZATION_NODE = "turn_initialization_node";
     static final String MODEL_NODE = "model_node";
     static final String TOOL_NODE = "tool_node";
+    static final String FINALIZE_NODE = "finalize_node";
 
     private static final String USE_TOOLS = "use_tools";
     private static final String FINISH = "finish";
     private static final String CONTINUE = "continue";
+    private static final String RETRY = "retry";
     private static final String WEB_SEARCH_TOOL = "web_search";
     private static final String WEB_FETCH_TOOL = "web_fetch";
     private static final Set<String> WEB_TOOLS = Set.of(WEB_SEARCH_TOOL, WEB_FETCH_TOOL);
@@ -70,7 +76,7 @@ public class AgentGraphFactory {
     private final ToolRuntime toolRuntime;
 
     public AgentGraphFactory(StreamingChatModel streamingChatModel, LC4jToolService toolService) {
-        this(streamingChatModel, toolService, List.of());
+        this(streamingChatModel, toolService, defaultMiddlewares());
     }
 
     public AgentGraphFactory(
@@ -83,6 +89,13 @@ public class AgentGraphFactory {
         this.middlewareManager = new MiddlewareManager(middlewares);
         this.modelRuntime = new ModelRuntime(streamingChatModel, sinkRegistry, middlewareManager);
         this.toolRuntime = new ToolRuntime(toolService, middlewareManager, AgentGraphFactory.class.getSimpleName());
+    }
+
+    private static List<WeflowMiddleware> defaultMiddlewares() {
+        return List.of(
+                new SearchAgentOutputValidationMiddleware(),
+                new CitationValidationMiddleware()
+        );
     }
 
     public AgentStreamSinkRegistry sinkRegistry() {
@@ -104,14 +117,19 @@ public class AgentGraphFactory {
                     .addNode(MODEL_NODE,
                             org.bsc.langgraph4j.action.AsyncNodeActionWithConfig.node_async(runtime::modelNode))
                     .addNode(TOOL_NODE, node_async(runtime::toolNode))
+                    .addNode(FINALIZE_NODE, node_async(runtime::finalizeNode))
                     .addEdge(START, TURN_INITIALIZATION_NODE)
                     .addEdge(TURN_INITIALIZATION_NODE, MODEL_NODE)
                     .addConditionalEdges(MODEL_NODE, command_async(runtime::routeAfterModel), Map.of(
                             USE_TOOLS, TOOL_NODE,
-                            FINISH, END
+                            FINISH, FINALIZE_NODE
                     ))
                     .addConditionalEdges(TOOL_NODE, command_async(runtime::routeAfterTool), Map.of(
                             CONTINUE, MODEL_NODE,
+                            FINISH, FINALIZE_NODE
+                    ))
+                    .addConditionalEdges(FINALIZE_NODE, command_async(runtime::routeAfterFinalize), Map.of(
+                            RETRY, MODEL_NODE,
                             FINISH, END
                     ));
 
@@ -143,6 +161,8 @@ public class AgentGraphFactory {
             update.put(AgentThreadState.FAILURE_CODE, "");
             update.put(AgentThreadState.FAILURE_MESSAGE, "");
             update.put(AgentThreadState.LEAD_TOOL_CALL_COUNTS, Map.of());
+            update.put(AgentThreadState.OUTPUT_VALIDATION_RETRY_COUNT, 0);
+            update.put(AgentThreadState.OUTPUT_VALIDATION_RETRY_REQUESTED, false);
             if (spec.runtimeLimits().hasOverallTimeout()) {
                 update.put(AgentThreadState.DEADLINE_EPOCH_MILLIS,
                         Instant.now().plus(spec.runtimeLimits().overallTimeout()).toEpochMilli());
@@ -214,6 +234,15 @@ public class AgentGraphFactory {
                     .orElseGet(() -> new Command(CONTINUE));
         }
 
+        private Command routeAfterFinalize(AgentThreadState state, RunnableConfig config) {
+            if (state.hasFailure()) {
+                return new Command(FINISH);
+            }
+            return state.outputValidationRetryRequested()
+                    ? new Command(RETRY)
+                    : new Command(FINISH);
+        }
+
         /**
          * Executes requested tools, applies lead-agent call limits, and records tool results.
          */
@@ -260,6 +289,37 @@ public class AgentGraphFactory {
                 update.put(AgentThreadState.LEAD_TOOL_CALL_COUNTS, toolLimitDecision.updatedCounts());
             }
             return update;
+        }
+
+        private Map<String, Object> finalizeNode(AgentThreadState state) {
+            if (state.hasFailure()) {
+                return Map.of(AgentThreadState.OUTPUT_VALIDATION_RETRY_REQUESTED, false);
+            }
+            FinishContext context = new FinishContext(runContext(null), state, state.currentAssistantMessage());
+            Optional<MiddlewareResult> result = middlewareManager.beforeFinish(context);
+            if (result.isEmpty()) {
+                return Map.of(AgentThreadState.OUTPUT_VALIDATION_RETRY_REQUESTED, false);
+            }
+            return switch (result.get().type()) {
+                case CONTINUE -> Map.of(AgentThreadState.OUTPUT_VALIDATION_RETRY_REQUESTED, false);
+                case SHORT_CIRCUIT -> withRetryRequested(result.get().update(), false);
+                case RETRY -> retryUpdate(state, result.get().retryFeedback());
+                case FAIL -> failureUpdate(result.get().failureCode(), result.get().failureMessage());
+            };
+        }
+
+        private Map<String, Object> retryUpdate(AgentThreadState state, String feedback) {
+            Map<String, Object> update = new LinkedHashMap<>();
+            update.put(MessagesState.MESSAGES_STATE, List.of(UserMessage.from(feedback)));
+            update.put(AgentThreadState.OUTPUT_VALIDATION_RETRY_COUNT, state.outputValidationRetryCount() + 1);
+            update.put(AgentThreadState.OUTPUT_VALIDATION_RETRY_REQUESTED, true);
+            return update;
+        }
+
+        private Map<String, Object> withRetryRequested(Map<String, Object> update, boolean retryRequested) {
+            Map<String, Object> merged = new LinkedHashMap<>(update);
+            merged.put(AgentThreadState.OUTPUT_VALIDATION_RETRY_REQUESTED, retryRequested);
+            return merged;
         }
 
         private AgentRunContext runContext(RunnableConfig config) {

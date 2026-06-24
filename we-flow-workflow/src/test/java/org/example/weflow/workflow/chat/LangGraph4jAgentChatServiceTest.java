@@ -291,7 +291,7 @@ class LangGraph4jAgentChatServiceTest {
                 AiMessage.from(toolRequest("tool-call-delegate", "delegate_task",
                         "{\"subAgentCode\":\"search_agent\",\"taskType\":\"general_task\","
                                 + "\"objective\":\"verify delegation\",\"input\":\"abc\"}")),
-                AiMessage.from("subagent should stay internal"),
+                AiMessage.from(validSearchOutput("subagent should stay internal", "None.")),
                 AiMessage.from("lead final")
         ));
         MutableSubAgentRegistry subAgentRegistry = new MutableSubAgentRegistry();
@@ -580,7 +580,9 @@ class LangGraph4jAgentChatServiceTest {
 
     @Test
     void searchAgentShouldSeeOnlySearchAndReadOnlyFileTools() {
-        RecordingChatModel chatModel = new RecordingChatModel();
+        ToolCallingChatModel chatModel = new ToolCallingChatModel(List.of(
+                AiMessage.from(validSearchOutput("call-1 messages=user:", "None."))
+        ));
         LC4jToolService toolService = LC4jToolService.builder()
                 .toolsFromObject(new WorkspaceFileTools(
                         new DefaultWorkspaceService(new WorkspaceProperties(workspaceRoot.toString()))))
@@ -610,6 +612,147 @@ class LangGraph4jAgentChatServiceTest {
                 .contains("Do NOT ask for clarification")
                 .contains("Recommended next steps for the lead agent")
                 .contains("Citations: Use `[citation:Title](URL)` format");
+    }
+
+    @Test
+    void searchAgentValidOutputWithCitationShouldPassWithoutRetry() {
+        ToolCallingChatModel chatModel = new ToolCallingChatModel(List.of(
+                AiMessage.from(validSearchOutput("checked public docs", "[citation:Example](https://example.com/docs)"))
+        ));
+        AgentExecutor searchAgent = new GraphBackedAgentExecutor(
+                DefaultAgentSpecs.searchAgentSpec(),
+                new AgentGraphFactory(chatModel, LC4jToolService.builder().build())
+        );
+
+        AgentResult result = searchAgent.execute(
+                new AgentTask("search-valid-citation", "research", "inspect", ""),
+                new AgentContext("lead_agent", "trace-valid-citation")
+        );
+
+        assertThat(result.status()).isEqualTo(AgentStatus.SUCCESS);
+        assertThat(result.output()).contains("[citation:Example](https://example.com/docs)");
+        assertThat(chatModel.requests()).hasSize(1);
+    }
+
+    @Test
+    void searchAgentWorkspaceOnlyOutputWithNoCitationsShouldPass() {
+        ToolCallingChatModel chatModel = new ToolCallingChatModel(List.of(
+                AiMessage.from(validSearchOutput("checked workspace files", "None."))
+        ));
+        AgentExecutor searchAgent = new GraphBackedAgentExecutor(
+                DefaultAgentSpecs.searchAgentSpec(),
+                new AgentGraphFactory(chatModel, LC4jToolService.builder().build())
+        );
+
+        AgentResult result = searchAgent.execute(
+                new AgentTask("search-workspace-only", "research", "inspect workspace", ""),
+                new AgentContext("lead_agent", "trace-workspace-only")
+        );
+
+        assertThat(result.status()).isEqualTo(AgentStatus.SUCCESS);
+        assertThat(result.output()).contains("None.");
+        assertThat(chatModel.requests()).hasSize(1);
+    }
+
+    @Test
+    void searchAgentInvalidStructureShouldRetryWithFeedbackAndThenPass() {
+        ToolCallingChatModel chatModel = new ToolCallingChatModel(List.of(
+                AiMessage.from("1. Summary\nOnly one section\n"),
+                AiMessage.from(validSearchOutput("fixed structure", "None."))
+        ));
+        AgentExecutor searchAgent = new GraphBackedAgentExecutor(
+                DefaultAgentSpecs.searchAgentSpec(),
+                new AgentGraphFactory(chatModel, LC4jToolService.builder().build())
+        );
+
+        AgentResult result = searchAgent.execute(
+                new AgentTask("search-retry-structure", "research", "inspect", ""),
+                new AgentContext("lead_agent", "trace-retry-structure")
+        );
+
+        assertThat(result.status()).isEqualTo(AgentStatus.SUCCESS);
+        assertThat(result.output()).contains("fixed structure");
+        assertThat(chatModel.requests()).hasSize(2);
+        assertThat(lastUserMessage(chatModel.requests().get(1)))
+                .contains("Search agent output validation failed")
+                .contains("Missing section 2");
+    }
+
+    @Test
+    void searchAgentInvalidStructureShouldFailWhenRetryBudgetIsExhausted() {
+        ToolCallingChatModel chatModel = new ToolCallingChatModel(List.of(
+                AiMessage.from("1. Summary\nOnly one section\n"),
+                AiMessage.from("1. Summary\nStill only one section\n")
+        ));
+        AgentExecutor searchAgent = new GraphBackedAgentExecutor(
+                DefaultAgentSpecs.searchAgentSpec(),
+                new AgentGraphFactory(chatModel, LC4jToolService.builder().build())
+        );
+
+        AgentResult result = searchAgent.execute(
+                new AgentTask("search-retry-exhausted", "research", "inspect", ""),
+                new AgentContext("lead_agent", "trace-retry-exhausted")
+        );
+
+        assertThat(result.status()).isEqualTo(AgentStatus.FAILED);
+        assertThat(result.errorCode()).isEqualTo("SEARCH_AGENT_OUTPUT_VALIDATION_FAILED");
+        assertThat(result.output()).isNull();
+        assertThat(chatModel.requests()).hasSize(2);
+    }
+
+    @Test
+    void searchAgentBareUrlShouldRetryWithFeedbackAndThenPass() {
+        ToolCallingChatModel chatModel = new ToolCallingChatModel(List.of(
+                AiMessage.from(validSearchOutput("found https://example.com/docs", "None.")),
+                AiMessage.from(validSearchOutput("fixed citation", "[citation:Example](https://example.com/docs)"))
+        ));
+        AgentExecutor searchAgent = new GraphBackedAgentExecutor(
+                DefaultAgentSpecs.searchAgentSpec(),
+                new AgentGraphFactory(chatModel, LC4jToolService.builder().build())
+        );
+
+        AgentResult result = searchAgent.execute(
+                new AgentTask("search-retry-citation", "research", "inspect", ""),
+                new AgentContext("lead_agent", "trace-retry-citation")
+        );
+
+        assertThat(result.status()).isEqualTo(AgentStatus.SUCCESS);
+        assertThat(result.output()).contains("[citation:Example](https://example.com/docs)");
+        assertThat(chatModel.requests()).hasSize(2);
+        assertThat(lastUserMessage(chatModel.requests().get(1)))
+                .contains("External URLs must appear only inside");
+    }
+
+    @Test
+    void searchAgentWebToolSuccessWithoutCitationShouldRetry() {
+        ToolCallingChatModel chatModel = new ToolCallingChatModel(List.of(
+                AiMessage.from(toolRequest("tool-call-search", "web_search", "{\"query\":\"example\"}")),
+                AiMessage.from(validSearchOutput("used external search result", "None.")),
+                AiMessage.from(validSearchOutput("added citation", "[citation:Example](https://example.com/docs)"))
+        ));
+        AgentExecutor searchAgent = new GraphBackedAgentExecutor(
+                DefaultAgentSpecs.searchAgentSpec(),
+                new AgentGraphFactory(chatModel, webSearchToolService("""
+                        status: success
+                        query: example
+                        totalResults: 1
+                        results:
+                        1. title: Example
+                           url: https://example.com/docs
+                           snippet: Example docs.
+                        """))
+        );
+
+        AgentResult result = searchAgent.execute(
+                new AgentTask("search-web-citation-required", "research", "inspect", ""),
+                new AgentContext("lead_agent", "trace-web-citation-required")
+        );
+
+        assertThat(result.status()).isEqualTo(AgentStatus.SUCCESS);
+        assertThat(result.output()).contains("[citation:Example](https://example.com/docs)");
+        assertThat(chatModel.requests()).hasSize(3);
+        assertThat(lastUserMessage(chatModel.requests().get(2)))
+                .contains("External source results require at least one citation");
     }
 
     @Test
@@ -1011,6 +1154,33 @@ class LangGraph4jAgentChatServiceTest {
                 .map(SystemMessage::text)
                 .findFirst()
                 .orElse("");
+    }
+
+    private String lastUserMessage(ChatRequest request) {
+        List<ChatMessage> messages = request.messages();
+        for (int i = messages.size() - 1; i >= 0; i--) {
+            if (messages.get(i) instanceof UserMessage userMessage) {
+                return userMessage.singleText();
+            }
+        }
+        return "";
+    }
+
+    private static String validSearchOutput(String summary, String citations) {
+        return """
+                1. Summary
+                %s
+                2. Key findings
+                The requested investigation was completed.
+                3. Relevant artifacts
+                No file changes were made.
+                4. Recommended next steps
+                Continue with the lead agent.
+                5. Issues or uncertainty
+                None.
+                6. Citations
+                %s
+                """.formatted(summary, citations);
     }
 
     private Set<String> toolNames(LC4jToolService toolService) {
