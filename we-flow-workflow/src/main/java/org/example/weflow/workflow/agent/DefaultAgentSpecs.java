@@ -4,7 +4,9 @@ import java.util.Collection;
 import java.util.Comparator;
 import java.util.Set;
 import java.util.stream.Collectors;
+import java.time.Duration;
 import org.example.weflow.core.agent.AgentDefinition;
+import org.example.weflow.core.agent.AgentRuntimeLimits;
 import org.example.weflow.core.agent.AgentSpec;
 import org.example.weflow.core.agent.AgentToolPolicy;
 import org.example.weflow.core.agent.AgentType;
@@ -15,8 +17,12 @@ public final class DefaultAgentSpecs {
     public static final String SEARCH_AGENT_CODE = "search_agent";
     public static final String IMPLEMENT_AGENT_CODE = "implement_agent";
 
-    public static final int DEFAULT_LEAD_MAX_TOOL_ITERATIONS = 8;
-    public static final int DEFAULT_SEARCH_MAX_TOOL_ITERATIONS = 6;
+    public static final int DEFAULT_LEAD_MAX_LOOPS = 100;
+    public static final int DEFAULT_SUBAGENT_MAX_LOOPS = 50;
+    public static final Duration DEFAULT_LLM_TIMEOUT = Duration.ofSeconds(600);
+    public static final Duration DEFAULT_SUBAGENT_TIMEOUT = Duration.ofSeconds(900);
+    public static final int DEFAULT_LEAD_TOOL_WARNING_THRESHOLD = 30;
+    public static final int DEFAULT_LEAD_TOOL_STOP_THRESHOLD = 50;
     private static final String WEB_SEARCH_TOOL = "web_search";
     private static final String WEB_FETCH_TOOL = "web_fetch";
     private static final String DELEGATE_TASK_TOOL = "delegate_task";
@@ -32,13 +38,21 @@ public final class DefaultAgentSpecs {
     }
 
     public static AgentSpec leadAgentSpec(Collection<AgentDefinition> subAgentDefinitions, Set<String> toolNames) {
-        return leadAgentSpec(subAgentDefinitions, toolNames, DEFAULT_LEAD_MAX_TOOL_ITERATIONS);
+        return leadAgentSpec(subAgentDefinitions, toolNames, defaultLeadRuntimeLimits());
     }
 
     public static AgentSpec leadAgentSpec(
             Collection<AgentDefinition> subAgentDefinitions,
             Set<String> toolNames,
-            int maxToolIterations
+            int maxLoops
+    ) {
+        return leadAgentSpec(subAgentDefinitions, toolNames, leadRuntimeLimits(maxLoops));
+    }
+
+    public static AgentSpec leadAgentSpec(
+            Collection<AgentDefinition> subAgentDefinitions,
+            Set<String> toolNames,
+            AgentRuntimeLimits runtimeLimits
     ) {
         return new AgentSpec(
                 new AgentDefinition(
@@ -50,15 +64,19 @@ public final class DefaultAgentSpecs {
                 ),
                 leadSystemPrompt(subAgentDefinitions, toolNames),
                 AgentToolPolicy.all(),
-                maxToolIterations
+                runtimeLimits
         );
     }
 
     public static AgentSpec searchAgentSpec() {
-        return searchAgentSpec(DEFAULT_SEARCH_MAX_TOOL_ITERATIONS);
+        return searchAgentSpec(defaultSubagentRuntimeLimits());
     }
 
-    public static AgentSpec searchAgentSpec(int maxToolIterations) {
+    public static AgentSpec searchAgentSpec(int maxLoops) {
+        return searchAgentSpec(subagentRuntimeLimits(maxLoops));
+    }
+
+    public static AgentSpec searchAgentSpec(AgentRuntimeLimits runtimeLimits) {
         return new AgentSpec(
                 searchAgentDefinition(),
                 """
@@ -87,7 +105,30 @@ public final class DefaultAgentSpecs {
                         </output_format>
                         """,
                 AgentToolPolicy.only(SEARCH_AGENT_TOOLS),
-                maxToolIterations
+                runtimeLimits
+        );
+    }
+
+    public static AgentRuntimeLimits defaultLeadRuntimeLimits() {
+        return leadRuntimeLimits(DEFAULT_LEAD_MAX_LOOPS);
+    }
+
+    public static AgentRuntimeLimits leadRuntimeLimits(int maxLoops) {
+        return AgentRuntimeLimits.lead(maxLoops, DEFAULT_LLM_TIMEOUT, defaultLeadToolCallLimit());
+    }
+
+    public static AgentRuntimeLimits defaultSubagentRuntimeLimits() {
+        return subagentRuntimeLimits(DEFAULT_SUBAGENT_MAX_LOOPS);
+    }
+
+    public static AgentRuntimeLimits subagentRuntimeLimits(int maxLoops) {
+        return AgentRuntimeLimits.subagent(maxLoops, DEFAULT_LLM_TIMEOUT, DEFAULT_SUBAGENT_TIMEOUT);
+    }
+
+    public static AgentRuntimeLimits.ToolCallLimit defaultLeadToolCallLimit() {
+        return new AgentRuntimeLimits.ToolCallLimit(
+                DEFAULT_LEAD_TOOL_WARNING_THRESHOLD,
+                DEFAULT_LEAD_TOOL_STOP_THRESHOLD
         );
     }
 

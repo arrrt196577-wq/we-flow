@@ -19,7 +19,12 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
+import org.springframework.http.client.reactive.ReactorClientHttpConnector;
 import org.springframework.web.reactive.function.client.WebClient;
+import reactor.core.publisher.Mono;
+import reactor.netty.http.client.HttpClient;
+import reactor.netty.transport.ProxyProvider;
+
 
 class JinaWebSearchClientTest {
 
@@ -157,6 +162,7 @@ class JinaWebSearchClientTest {
                 .isInstanceOf(WebSearchException.class)
                 .hasMessageContaining("Jina search failed");
     }
+
 
     private JinaWebSearchClient client(int maxResults, int maxSnippetChars, boolean noCache) {
         return new JinaWebSearchClient(WebClient.builder(), new WebSearchProperties(

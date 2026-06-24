@@ -3,6 +3,7 @@ package org.example.weflow.workflow.chat;
 import dev.langchain4j.model.chat.StreamingChatModel;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.Executor;
 import java.util.stream.Collectors;
 import org.bsc.langgraph4j.langchain4j.tool.LC4jToolService;
 import org.example.weflow.agent.subagent.SubAgentRegistry;
@@ -20,6 +21,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 
 @Configuration(proxyBeanMethods = false)
 @ConditionalOnProperty(prefix = "we-flow.chat", name = "engine", havingValue = "langgraph4j")
@@ -29,6 +31,17 @@ class LangGraph4jAgentRuntimeConfiguration {
     @Bean
     AgentGraphFactory agentGraphFactory(StreamingChatModel streamingChatModel, LC4jToolService toolService) {
         return new AgentGraphFactory(streamingChatModel, toolService);
+    }
+
+    @Bean("agentStreamExecutor")
+    Executor agentStreamExecutor() {
+        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        executor.setThreadNamePrefix("we-flow-agent-stream-");
+        executor.setCorePoolSize(4);
+        executor.setMaxPoolSize(16);
+        executor.setQueueCapacity(100);
+        executor.initialize();
+        return executor;
     }
 
     @Bean("leadAgentSpec")
@@ -44,13 +57,13 @@ class LangGraph4jAgentRuntimeConfiguration {
         return DefaultAgentSpecs.leadAgentSpec(
                 subAgentDefinitions,
                 toolNames(toolService),
-                properties.leadMaxToolIterations()
+                properties.leadRuntimeLimits()
         );
     }
 
     @Bean("searchAgentSpec")
     AgentSpec searchAgentSpec(AgentRuntimeProperties properties) {
-        return DefaultAgentSpecs.searchAgentSpec(properties.searchMaxToolIterations());
+        return DefaultAgentSpecs.searchAgentSpec(properties.subagentRuntimeLimits());
     }
 
     @Bean

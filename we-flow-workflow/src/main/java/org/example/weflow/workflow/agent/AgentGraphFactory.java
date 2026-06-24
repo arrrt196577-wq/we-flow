@@ -12,20 +12,17 @@ import dev.langchain4j.data.message.ChatMessage;
 import dev.langchain4j.data.message.SystemMessage;
 import dev.langchain4j.data.message.ToolExecutionResultMessage;
 import dev.langchain4j.data.message.UserMessage;
-import dev.langchain4j.invocation.InvocationContext;
-import dev.langchain4j.invocation.InvocationParameters;
 import dev.langchain4j.model.chat.StreamingChatModel;
 import dev.langchain4j.model.chat.request.ChatRequest;
-import dev.langchain4j.model.chat.response.ChatResponse;
-import dev.langchain4j.model.chat.response.PartialThinking;
-import dev.langchain4j.model.chat.response.StreamingChatResponseHandler;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
-import java.util.UUID;
-import java.util.concurrent.CompletableFuture;
+import java.util.function.Consumer;
 import java.util.stream.Collectors;
 import lombok.extern.slf4j.Slf4j;
 import org.bsc.langgraph4j.CompileConfig;
@@ -38,7 +35,15 @@ import org.bsc.langgraph4j.checkpoint.MemorySaver;
 import org.bsc.langgraph4j.langchain4j.serializer.std.LC4jStateSerializer;
 import org.bsc.langgraph4j.langchain4j.tool.LC4jToolService;
 import org.bsc.langgraph4j.prebuilt.MessagesState;
+import org.example.weflow.core.agent.AgentRuntimeLimits;
 import org.example.weflow.core.agent.AgentSpec;
+import org.example.weflow.core.agent.AgentType;
+import org.example.weflow.core.service.dto.ChatStreamChunk;
+import org.example.weflow.workflow.agent.runtime.AgentRunContext;
+import org.example.weflow.workflow.agent.runtime.MiddlewareManager;
+import org.example.weflow.workflow.agent.runtime.ModelRuntime;
+import org.example.weflow.workflow.agent.runtime.ToolRuntime;
+import org.example.weflow.workflow.agent.runtime.WeflowMiddleware;
 
 @Slf4j
 public class AgentGraphFactory {
@@ -53,15 +58,40 @@ public class AgentGraphFactory {
     private static final String WEB_SEARCH_TOOL = "web_search";
     private static final String WEB_FETCH_TOOL = "web_fetch";
     private static final Set<String> WEB_TOOLS = Set.of(WEB_SEARCH_TOOL, WEB_FETCH_TOOL);
+    private static final String FAILURE_MAX_LOOPS_EXCEEDED = "AGENT_MAX_LOOPS_EXCEEDED";
+    private static final String FAILURE_LLM_TIMEOUT = "AGENT_LLM_TIMEOUT";
+    private static final String FAILURE_SUB_AGENT_TIMEOUT = "SUB_AGENT_TIMEOUT";
+    private static final String FAILURE_LEAD_TOOL_CALL_LIMIT_EXCEEDED = "LEAD_TOOL_CALL_LIMIT_EXCEEDED";
 
-    private final StreamingChatModel streamingChatModel;
     private final LC4jToolService toolService;
+    private final AgentStreamSinkRegistry sinkRegistry;
+    private final MiddlewareManager middlewareManager;
+    private final ModelRuntime modelRuntime;
+    private final ToolRuntime toolRuntime;
 
     public AgentGraphFactory(StreamingChatModel streamingChatModel, LC4jToolService toolService) {
-        this.streamingChatModel = streamingChatModel;
-        this.toolService = toolService;
+        this(streamingChatModel, toolService, List.of());
     }
 
+    public AgentGraphFactory(
+            StreamingChatModel streamingChatModel,
+            LC4jToolService toolService,
+            List<WeflowMiddleware> middlewares
+    ) {
+        this.toolService = toolService;
+        this.sinkRegistry = new AgentStreamSinkRegistry();
+        this.middlewareManager = new MiddlewareManager(middlewares);
+        this.modelRuntime = new ModelRuntime(streamingChatModel, sinkRegistry, middlewareManager);
+        this.toolRuntime = new ToolRuntime(toolService, middlewareManager, AgentGraphFactory.class.getSimpleName());
+    }
+
+    public AgentStreamSinkRegistry sinkRegistry() {
+        return sinkRegistry;
+    }
+
+    /**
+     * Builds and compiles the LangGraph4j state graph for the supplied agent specification.
+     */
     public CompiledGraph<AgentThreadState> create(AgentSpec spec) {
         try {
             GraphRuntime runtime = new GraphRuntime(spec);
@@ -71,7 +101,8 @@ public class AgentGraphFactory {
             );
 
             graph.addNode(TURN_INITIALIZATION_NODE, node_async(runtime::initializeTurn))
-                    .addNode(MODEL_NODE, node_async(runtime::modelNode))
+                    .addNode(MODEL_NODE,
+                            org.bsc.langgraph4j.action.AsyncNodeActionWithConfig.node_async(runtime::modelNode))
                     .addNode(TOOL_NODE, node_async(runtime::toolNode))
                     .addEdge(START, TURN_INITIALIZATION_NODE)
                     .addEdge(TURN_INITIALIZATION_NODE, MODEL_NODE)
@@ -101,29 +132,66 @@ public class AgentGraphFactory {
             this.spec = spec;
         }
 
+        /**
+         * Resets per-turn state and establishes the overall deadline before graph execution begins.
+         */
         private Map<String, Object> initializeTurn(AgentThreadState state) {
-            return Map.of(
-                    MessagesState.MESSAGES_STATE, List.of(UserMessage.from(state.currentUserMessage())),
-                    AgentThreadState.CURRENT_ASSISTANT_THINKING, "",
-                    AgentThreadState.TOOL_ITERATION_COUNT, 0
-            );
+            Map<String, Object> update = new LinkedHashMap<>();
+            update.put(MessagesState.MESSAGES_STATE, List.of(UserMessage.from(state.currentUserMessage())));
+            update.put(AgentThreadState.CURRENT_ASSISTANT_THINKING, "");
+            update.put(AgentThreadState.LOOP_COUNT, 0);
+            update.put(AgentThreadState.FAILURE_CODE, "");
+            update.put(AgentThreadState.FAILURE_MESSAGE, "");
+            update.put(AgentThreadState.LEAD_TOOL_CALL_COUNTS, Map.of());
+            if (spec.runtimeLimits().hasOverallTimeout()) {
+                update.put(AgentThreadState.DEADLINE_EPOCH_MILLIS,
+                        Instant.now().plus(spec.runtimeLimits().overallTimeout()).toEpochMilli());
+            }
+            return update;
         }
 
-        private Map<String, Object> modelNode(AgentThreadState state) {
+        /**
+         * Invokes the chat model with the current conversation state while enforcing runtime limits.
+         */
+        private Map<String, Object> modelNode(AgentThreadState state, RunnableConfig config) {
+            Optional<Map<String, Object>> failure = failureBeforeModel(state);
+            if (failure.isPresent()) {
+                return failure.get();
+            }
             log.info("[{} modelNode] messages count: {}", spec.definition().code(), state.messages().size());
             ChatRequest chatRequest = ChatRequest.builder()
                     .messages(messagesForModel(state.messages()))
                     .toolSpecifications(availableToolSpecifications())
                     .build();
-            AiMessage aiMessage = chat(chatRequest);
+            Duration effectiveTimeout = modelRuntime.effectiveLlmTimeout(spec, state);
+            boolean timeoutUsesOverallDeadline = modelRuntime.timeoutUsesOverallDeadline(spec, state, effectiveTimeout);
+            AiMessage aiMessage;
+            try {
+                Consumer<ChatStreamChunk> sink = modelRuntime.partialSink(config).orElse(null);
+                aiMessage = modelRuntime.call(runContext(config), state, chatRequest, effectiveTimeout, sink);
+            } catch (RuntimeException e) {
+                if (modelRuntime.isTimeout(e)) {
+                    return timeoutUsesOverallDeadline
+                            ? failureUpdate(FAILURE_SUB_AGENT_TIMEOUT, subAgentTimeoutMessage())
+                            : failureUpdate(FAILURE_LLM_TIMEOUT, llmTimeoutMessage(spec.runtimeLimits().llmTimeout()));
+                }
+                throw e;
+            }
             return Map.of(
                     MessagesState.MESSAGES_STATE, List.of(aiMessage),
                     AgentThreadState.CURRENT_ASSISTANT_MESSAGE, assistantText(aiMessage),
-                    AgentThreadState.CURRENT_ASSISTANT_THINKING, assistantThinking(aiMessage)
+                    AgentThreadState.CURRENT_ASSISTANT_THINKING, assistantThinking(aiMessage),
+                    AgentThreadState.LOOP_COUNT, state.loopCount() + 1
             );
         }
 
+        /**
+         * Routes model output either to tool execution or to graph completion.
+         */
         private Command routeAfterModel(AgentThreadState state, RunnableConfig config) {
+            if (state.hasFailure()) {
+                return new Command(FINISH);
+            }
             return lastAiMessage(state)
                     .filter(AiMessage::hasToolExecutionRequests)
                     .map(aiMessage -> {
@@ -132,30 +200,71 @@ public class AgentGraphFactory {
                         if (!unsupportedToolRequests.isEmpty()) {
                             return finishCommand(unsupportedToolMessage(unsupportedToolRequests));
                         }
-                        if (state.toolIterationCount() >= spec.maxToolIterations()) {
-                            return finishCommand(maxToolIterationsMessage());
-                        }
                         return new Command(USE_TOOLS);
                     })
                     .orElseGet(() -> new Command(FINISH));
         }
 
         private Command routeAfterTool(AgentThreadState state, RunnableConfig config) {
+            if (state.hasFailure()) {
+                return new Command(FINISH);
+            }
             return webToolFailureMessage(state.messages())
                     .map(this::finishCommand)
                     .orElseGet(() -> new Command(CONTINUE));
         }
 
+        /**
+         * Executes requested tools, applies lead-agent call limits, and records tool results.
+         */
         private Map<String, Object> toolNode(AgentThreadState state) {
+            Optional<Map<String, Object>> failure = failureBeforeTool(state);
+            if (failure.isPresent()) {
+                return failure.get();
+            }
             AiMessage aiMessage = lastAiMessage(state)
                     .filter(AiMessage::hasToolExecutionRequests)
                     .orElseThrow(() -> new IllegalStateException("Tool node requires an AI message with tool requests."));
             List<ToolExecutionRequest> toolRequests = aiMessage.toolExecutionRequests();
-            Command command = toolService.execute(toolRequests, invocationContext(state), MessagesState.MESSAGES_STATE).join();
-            return Map.of(
-                    MessagesState.MESSAGES_STATE, toolResultMessages(command),
-                    AgentThreadState.TOOL_ITERATION_COUNT, state.toolIterationCount() + 1
+            ToolLimitDecision toolLimitDecision = leadToolLimitDecision(state.leadToolCallCounts(), toolRequests);
+            if (toolLimitDecision.shouldStop()) {
+                return failureUpdate(FAILURE_LEAD_TOOL_CALL_LIMIT_EXCEEDED,
+                        leadToolStopMessage(toolLimitDecision.stopToolName(), toolLimitDecision.stopCount()));
+            }
+
+            Command command;
+            try {
+                command = toolRuntime.execute(
+                        runContext(null),
+                        toolRequests,
+                        state,
+                        modelRuntime.remainingOverallTimeout(state)
+                );
+            } catch (RuntimeException e) {
+                if (toolRuntime.isTimeout(e)) {
+                    return failureUpdate(FAILURE_SUB_AGENT_TIMEOUT, subAgentTimeoutMessage());
+                }
+                throw e;
+            }
+            if (modelRuntime.overallTimeoutExceeded(state)) {
+                return failureUpdate(FAILURE_SUB_AGENT_TIMEOUT, subAgentTimeoutMessage());
+            }
+
+            List<ToolExecutionResultMessage> toolResults = appendLeadToolWarnings(
+                    toolRuntime.toolResultMessages(command),
+                    toolLimitDecision
             );
+            Map<String, Object> update = new LinkedHashMap<>();
+            update.put(MessagesState.MESSAGES_STATE, toolResults);
+            if (spec.runtimeLimits().hasLeadToolCallLimit()) {
+                update.put(AgentThreadState.LEAD_TOOL_CALL_COUNTS, toolLimitDecision.updatedCounts());
+            }
+            return update;
+        }
+
+        private AgentRunContext runContext(RunnableConfig config) {
+            String threadId = config == null ? null : config.threadId().orElse(null);
+            return new AgentRunContext(spec, threadId);
         }
 
         private List<ChatMessage> messagesForModel(List<ChatMessage> messages) {
@@ -189,27 +298,6 @@ public class AgentGraphFactory {
             return java.util.Optional.empty();
         }
 
-        private InvocationContext invocationContext(AgentThreadState state) {
-            return InvocationContext.builder()
-                    .invocationId(UUID.randomUUID())
-                    .interfaceName(AgentGraphFactory.class.getSimpleName())
-                    .methodName("toolNode")
-                    .methodArguments(List.of(state.currentUserMessage()))
-                    .chatMemoryId(state.value("thread_id").orElse(null))
-                    .invocationParameters(InvocationParameters.from(Map.of()))
-                    .timestamp(Instant.now())
-                    .build();
-        }
-
-        @SuppressWarnings("unchecked")
-        private List<ToolExecutionResultMessage> toolResultMessages(Command command) {
-            Object update = command.update().get(MessagesState.MESSAGES_STATE);
-            if (update instanceof List<?> messages) {
-                return (List<ToolExecutionResultMessage>) messages;
-            }
-            return List.of();
-        }
-
         private String assistantText(AiMessage aiMessage) {
             return aiMessage.text() == null ? "" : aiMessage.text();
         }
@@ -218,8 +306,127 @@ public class AgentGraphFactory {
             return aiMessage.thinking() == null ? "" : aiMessage.thinking();
         }
 
-        private String maxToolIterationsMessage() {
-            return "Tool execution stopped because the maximum number of tool iterations was reached.";
+        /**
+         * Checks whether model execution should be skipped because a controlled failure already applies.
+         */
+        private Optional<Map<String, Object>> failureBeforeModel(AgentThreadState state) {
+            if (state.hasFailure()) {
+                return Optional.of(failureUpdate(state.failureCode().orElse("AGENT_EXECUTION_FAILED"),
+                        state.failureMessage()));
+            }
+            if (modelRuntime.overallTimeoutExceeded(state)) {
+                return Optional.of(failureUpdate(FAILURE_SUB_AGENT_TIMEOUT, subAgentTimeoutMessage()));
+            }
+            if (state.loopCount() >= spec.runtimeLimits().maxLoops()) {
+                return Optional.of(failureUpdate(FAILURE_MAX_LOOPS_EXCEEDED, maxLoopsMessage()));
+            }
+            return Optional.empty();
+        }
+
+        private Optional<Map<String, Object>> failureBeforeTool(AgentThreadState state) {
+            if (state.hasFailure()) {
+                return Optional.of(failureUpdate(state.failureCode().orElse("AGENT_EXECUTION_FAILED"),
+                        state.failureMessage()));
+            }
+            if (modelRuntime.overallTimeoutExceeded(state)) {
+                return Optional.of(failureUpdate(FAILURE_SUB_AGENT_TIMEOUT, subAgentTimeoutMessage()));
+            }
+            return Optional.empty();
+        }
+
+        /**
+         * Updates lead-agent tool call counters and decides whether to warn or stop execution.
+         */
+        private ToolLimitDecision leadToolLimitDecision(
+                Map<String, Integer> currentCounts,
+                List<ToolExecutionRequest> toolRequests
+        ) {
+            if (!spec.runtimeLimits().hasLeadToolCallLimit()
+                    || spec.definition().type() != AgentType.LEAD) {
+                return ToolLimitDecision.allowed(currentCounts);
+            }
+
+            AgentRuntimeLimits.ToolCallLimit limit = spec.runtimeLimits().leadToolCallLimit();
+            Map<String, Integer> updatedCounts = new LinkedHashMap<>(currentCounts);
+            Set<String> warningToolNames = new java.util.LinkedHashSet<>();
+            for (ToolExecutionRequest toolRequest : toolRequests) {
+                String toolName = toolRequest.name();
+                int previousCount = updatedCounts.getOrDefault(toolName, 0);
+                int nextCount = previousCount + 1;
+                if (nextCount >= limit.stopThreshold()) {
+                    return ToolLimitDecision.stop(updatedCounts, toolName, nextCount);
+                }
+                if (previousCount < limit.warningThreshold() && nextCount >= limit.warningThreshold()) {
+                    warningToolNames.add(toolName);
+                }
+                updatedCounts.put(toolName, nextCount);
+            }
+            return new ToolLimitDecision(updatedCounts, warningToolNames, null, 0);
+        }
+
+        /**
+         * Appends warning text to the first result for each tool that crossed the warning threshold.
+         */
+        private List<ToolExecutionResultMessage> appendLeadToolWarnings(
+                List<ToolExecutionResultMessage> messages,
+                ToolLimitDecision toolLimitDecision
+        ) {
+            if (toolLimitDecision.warningToolNames().isEmpty()) {
+                return messages;
+            }
+            Set<String> remainingWarnings = new java.util.LinkedHashSet<>(toolLimitDecision.warningToolNames());
+            List<ToolExecutionResultMessage> updatedMessages = new ArrayList<>(messages.size());
+            for (ToolExecutionResultMessage message : messages) {
+                if (remainingWarnings.remove(message.toolName())) {
+                    updatedMessages.add(ToolExecutionResultMessage.builder()
+                            .id(message.id())
+                            .toolName(message.toolName())
+                            .text((message.text() == null ? "" : message.text())
+                                    + "\n\n" + leadToolWarningMessage(message.toolName()))
+                            .isError(message.isError())
+                            .attributes(message.attributes())
+                            .build());
+                } else {
+                    updatedMessages.add(message);
+                }
+            }
+            return updatedMessages;
+        }
+
+        private Map<String, Object> failureUpdate(String code, String message) {
+            return middlewareManager.failureUpdate(code, message);
+        }
+
+        private String maxLoopsMessage() {
+            return "Agent execution stopped because the maximum number of LLM loops was reached: "
+                    + spec.runtimeLimits().maxLoops() + ".";
+        }
+
+        private String llmTimeoutMessage(Duration timeout) {
+            return "Agent execution stopped because a single LLM call exceeded the configured timeout of "
+                    + timeout.toSeconds() + " seconds.";
+        }
+
+        private String subAgentTimeoutMessage() {
+            return "Subagent execution stopped because the overall timeout was reached.";
+        }
+
+        private String leadToolWarningMessage(String toolName) {
+            AgentRuntimeLimits.ToolCallLimit limit = spec.runtimeLimits().leadToolCallLimit();
+            return "warning:\n"
+                    + "code: LEAD_TOOL_CALL_WARNING\n"
+                    + "message: Tool " + toolName + " has reached "
+                    + limit.warningThreshold()
+                    + " calls in this request. Change strategy before the hard stop at "
+                    + limit.stopThreshold()
+                    + " calls.";
+        }
+
+        private String leadToolStopMessage(String toolName, int count) {
+            AgentRuntimeLimits.ToolCallLimit limit = spec.runtimeLimits().leadToolCallLimit();
+            return "Tool execution stopped because tool " + toolName + " reached "
+                    + count + " calls in this request. The hard stop threshold is "
+                    + limit.stopThreshold() + ".";
         }
 
         private List<ToolExecutionRequest> unsupportedToolRequests(List<ToolExecutionRequest> toolRequests) {
@@ -229,6 +436,9 @@ public class AgentGraphFactory {
                     .toList();
         }
 
+        /**
+         * Produces a user-facing explanation for requested tools that are unavailable in this runtime.
+         */
         private String unsupportedToolMessage(List<ToolExecutionRequest> unsupportedToolRequests) {
             boolean includesWebSearch = unsupportedToolRequests.stream()
                     .anyMatch(toolRequest -> WEB_SEARCH_TOOL.equals(toolRequest.name()));
@@ -258,6 +468,9 @@ public class AgentGraphFactory {
                     .findFirst();
         }
 
+        /**
+         * Returns tool result messages that belong to the most recent AI tool-call response.
+         */
         private List<ChatMessage> latestToolResultMessages(List<ChatMessage> messages) {
             int latestAiMessageIndex = -1;
             for (int i = messages.size() - 1; i >= 0; i--) {
@@ -318,66 +531,24 @@ public class AgentGraphFactory {
         }
     }
 
-    private AiMessage chat(ChatRequest chatRequest) {
-        CompletableFuture<AiMessage> responseFuture = new CompletableFuture<>();
-        StringBuilder responseBuilder = new StringBuilder();
-        StringBuilder thinkingBuilder = new StringBuilder();
+    private record ToolLimitDecision(
+            Map<String, Integer> updatedCounts,
+            Set<String> warningToolNames,
+            String stopToolName,
+            int stopCount
+    ) {
 
-        streamingChatModel.chat(chatRequest, new StreamingChatResponseHandler() {
-            @Override
-            public void onPartialResponse(String partialResponse) {
-                responseBuilder.append(partialResponse);
-            }
+        private static ToolLimitDecision allowed(Map<String, Integer> currentCounts) {
+            return new ToolLimitDecision(currentCounts, Set.of(), null, 0);
+        }
 
-            @Override
-            public void onPartialThinking(PartialThinking partialThinking) {
-                thinkingBuilder.append(partialThinking.text());
-            }
+        private static ToolLimitDecision stop(Map<String, Integer> updatedCounts, String stopToolName, int stopCount) {
+            return new ToolLimitDecision(updatedCounts, Set.of(), stopToolName, stopCount);
+        }
 
-            @Override
-            public void onCompleteResponse(ChatResponse response) {
-                AiMessage aiMessage = response.aiMessage();
-                if (aiMessage == null) {
-                    responseFuture.complete(aiMessage(responseBuilder.toString(), thinkingBuilder.toString()));
-                    return;
-                }
-                if (!aiMessage.hasToolExecutionRequests()
-                        && (aiMessage.text() == null || aiMessage.text().isBlank())
-                        && !responseBuilder.isEmpty()) {
-                    responseFuture.complete(aiMessage(responseBuilder.toString(), thinkingBuilder.toString()));
-                    return;
-                }
-                responseFuture.complete(withThinkingFallback(aiMessage, thinkingBuilder.toString()));
-            }
-
-            @Override
-            public void onError(Throwable throwable) {
-                responseFuture.completeExceptionally(throwable);
-            }
-        });
-
-        return responseFuture.join();
+        private boolean shouldStop() {
+            return stopToolName != null;
+        }
     }
 
-    private AiMessage aiMessage(String text, String thinking) {
-        if (thinking == null || thinking.isBlank()) {
-            return AiMessage.from(text);
-        }
-        return AiMessage.builder()
-                .text(text)
-                .thinking(thinking)
-                .build();
-    }
-
-    private AiMessage withThinkingFallback(AiMessage aiMessage, String thinking) {
-        if (aiMessage.thinking() != null && !aiMessage.thinking().isBlank()) {
-            return aiMessage;
-        }
-        if (thinking == null || thinking.isBlank()) {
-            return aiMessage;
-        }
-        return aiMessage.toBuilder()
-                .thinking(thinking)
-                .build();
-    }
 }
