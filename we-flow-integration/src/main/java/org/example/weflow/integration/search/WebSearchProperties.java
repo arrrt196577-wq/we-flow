@@ -28,6 +28,8 @@ public record WebSearchProperties(
     public static final int DEFAULT_JINA_MAX_SNIPPET_CHARS = 800;
     public static final int DEFAULT_JINA_MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
     public static final int DEFAULT_JINA_MAX_TOKENS = 8000;
+    public static final boolean DEFAULT_JINA_AUTO_CHINESE_GL = true;
+    public static final String DEFAULT_JINA_CHINESE_GL = "CN";
 
     public WebSearchProperties {
         enabled = enabled != null && enabled;
@@ -37,7 +39,7 @@ public record WebSearchProperties(
         region = StringUtils.hasText(region) ? region.trim() : DEFAULT_REGION;
         safeSearch = StringUtils.hasText(safeSearch) ? safeSearch.trim().toLowerCase() : DEFAULT_SAFE_SEARCH;
         proxy = proxy == null ? new ProxyProperties(false, null, null, null, null) : proxy;
-        jina = jina == null ? new JinaProperties(null, null, null, null, null, null) : jina;
+        jina = jina == null ? new JinaProperties(null, null, null, null, null, null, null, null) : jina;
     }
 
     public boolean isEnabled() {
@@ -71,7 +73,9 @@ public record WebSearchProperties(
             Boolean noCache,
             Integer maxSnippetChars,
             Integer maxResponseBytes,
-            Integer maxTokens
+            Integer maxTokens,
+            Boolean autoChineseGl,
+            String chineseGl
     ) {
 
         public JinaProperties {
@@ -83,10 +87,16 @@ public record WebSearchProperties(
             maxResponseBytes = Math.max(256 * 1024,
                     maxResponseBytes == null ? DEFAULT_JINA_MAX_RESPONSE_BYTES : maxResponseBytes);
             maxTokens = maxTokens == null ? DEFAULT_JINA_MAX_TOKENS : normalizeMaxTokens(maxTokens);
+            autoChineseGl = autoChineseGl == null ? DEFAULT_JINA_AUTO_CHINESE_GL : autoChineseGl;
+            chineseGl = chineseGl == null ? DEFAULT_JINA_CHINESE_GL : chineseGl.trim().toUpperCase();
         }
 
         public boolean isNoCache() {
             return Boolean.TRUE.equals(noCache);
+        }
+
+        public boolean isAutoChineseGl() {
+            return Boolean.TRUE.equals(autoChineseGl);
         }
     }
 

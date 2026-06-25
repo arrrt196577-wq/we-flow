@@ -60,7 +60,9 @@ class WebSearchConfigurationTest {
                         "we-flow.search.jina.no-cache=true",
                         "we-flow.search.jina.max-snippet-chars=120",
                         "we-flow.search.jina.max-response-bytes=1048576",
-                        "we-flow.search.jina.max-tokens=2000"
+                        "we-flow.search.jina.max-tokens=2000",
+                        "we-flow.search.jina.auto-chinese-gl=false",
+                        "we-flow.search.jina.chinese-gl=HK"
                 )
                 .run(context -> {
                     WebSearchProperties.JinaProperties jina = context.getBean(WebSearchProperties.class).jina();
@@ -73,6 +75,8 @@ class WebSearchConfigurationTest {
                     assertThat(jina.maxSnippetChars()).isEqualTo(120);
                     assertThat(jina.maxResponseBytes()).isEqualTo(1048576);
                     assertThat(jina.maxTokens()).isEqualTo(2000);
+                    assertThat(jina.isAutoChineseGl()).isFalse();
+                    assertThat(jina.chineseGl()).isEqualTo("HK");
                 });
     }
 

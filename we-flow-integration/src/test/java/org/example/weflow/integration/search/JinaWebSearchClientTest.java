@@ -68,6 +68,7 @@ class JinaWebSearchClientTest {
                 new WebSearchResult("Second", "https://example.com/second", "Second content"));
         assertThat(queryParam(rawQuery.get(), "q")).isEqualTo("jina ai");
         assertThat(queryParam(rawQuery.get(), "num")).isEqualTo("2");
+        assertThat(queryParam(rawQuery.get(), "gl")).isEmpty();
         assertThat(authorization.get()).isEqualTo("Bearer test-key");
         assertThat(accept.get()).contains(MediaType.APPLICATION_JSON_VALUE);
         assertThat(noCache.get()).isEqualTo("true");
@@ -93,6 +94,30 @@ class JinaWebSearchClientTest {
                         "Wrapped",
                         "https://example.com/wrapped",
                         "Wrapped result"));
+    }
+
+    @Test
+    void searchShouldSendChineseGlForChineseQuery() {
+        client(5, 80, false)
+                .search(new WebSearchRequest("新能源汽车 政策", 5));
+
+        assertThat(queryParam(rawQuery.get(), "gl")).isEqualTo("CN");
+    }
+
+    @Test
+    void searchShouldNotSendChineseGlForEnglishQuery() {
+        client(5, 80, false)
+                .search(new WebSearchRequest("jina ai search", 5));
+
+        assertThat(queryParam(rawQuery.get(), "gl")).isEmpty();
+    }
+
+    @Test
+    void searchShouldNotSendChineseGlWhenAutoChineseGlDisabled() {
+        client(5, 80, false, false, "CN")
+                .search(new WebSearchRequest("新能源汽车 政策", 5));
+
+        assertThat(queryParam(rawQuery.get(), "gl")).isEmpty();
     }
 
     @Test
@@ -165,6 +190,16 @@ class JinaWebSearchClientTest {
 
 
     private JinaWebSearchClient client(int maxResults, int maxSnippetChars, boolean noCache) {
+        return client(maxResults, maxSnippetChars, noCache, null, null);
+    }
+
+    private JinaWebSearchClient client(
+            int maxResults,
+            int maxSnippetChars,
+            boolean noCache,
+            Boolean autoChineseGl,
+            String chineseGl
+    ) {
         return new JinaWebSearchClient(WebClient.builder(), new WebSearchProperties(
                 true,
                 "jina",
@@ -179,7 +214,9 @@ class JinaWebSearchClientTest {
                         noCache,
                         maxSnippetChars,
                         null,
-                        null)));
+                        null,
+                        autoChineseGl,
+                        chineseGl)));
     }
 
     private void handleSearch(HttpExchange exchange) throws IOException {

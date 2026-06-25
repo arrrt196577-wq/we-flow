@@ -5,6 +5,8 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.ArrayList;
 import java.util.List;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.util.StringUtils;
@@ -12,6 +14,7 @@ import org.springframework.web.reactive.function.client.WebClient;
 
 final class JinaWebSearchClient implements WebSearchClient {
 
+    private static final Logger log = LoggerFactory.getLogger(JinaWebSearchClient.class);
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
     private static final String NO_CACHE_HEADER = "x-no-cache";
     private static final String MAX_TOKENS_HEADER = "x-max-tokens";
@@ -36,13 +39,21 @@ final class JinaWebSearchClient implements WebSearchClient {
     @Override
     public WebSearchResponse search(WebSearchRequest request) {
         int maxResults = Math.min(request.maxResults(), properties.maxResults());
+        String gl = resolveGl(request.query());
+        log.info("Jina search request query={} maxResults={} regionParam={}",
+                cleanText(request.query()), maxResults, regionLogField(gl));
         try {
             String body = webClient.get()
-                    .uri(uriBuilder -> uriBuilder
-                            .path("/")
-                            .queryParam("q", request.query())
-                            .queryParam("num", maxResults)
-                            .build())
+                    .uri(uriBuilder -> {
+                        var builder = uriBuilder
+                                .path("/")
+                                .queryParam("q", request.query())
+                                .queryParam("num", maxResults);
+                        if (StringUtils.hasText(gl)) {
+                            builder = builder.queryParam("gl", gl);
+                        }
+                        return builder.build();
+                    })
                     .headers(headers -> {
                         if (properties.jina().isNoCache()) {
                             headers.set(NO_CACHE_HEADER, "true");
@@ -130,9 +141,36 @@ final class JinaWebSearchClient implements WebSearchClient {
         return value.substring(0, maxChars).trim();
     }
 
+    private static String regionLogField(String gl) {
+        return StringUtils.hasText(gl) ? "gl=" + gl : "default";
+    }
+
     private long jinaTimeoutSeconds() {
         long seconds = properties.timeout().toSeconds() - X_TIMEOUT_BUFFER_SECONDS;
         return Math.max(1, Math.min(180, seconds));
+    }
+
+    private String resolveGl(String query) {
+        if (!properties.jina().isAutoChineseGl()
+                || !StringUtils.hasText(properties.jina().chineseGl())
+                || !containsHanScript(query)) {
+            return "";
+        }
+        return properties.jina().chineseGl();
+    }
+
+    private static boolean containsHanScript(String value) {
+        if (!StringUtils.hasText(value)) {
+            return false;
+        }
+        for (int offset = 0; offset < value.length(); ) {
+            int codePoint = value.codePointAt(offset);
+            if (Character.UnicodeScript.of(codePoint) == Character.UnicodeScript.HAN) {
+                return true;
+            }
+            offset += Character.charCount(codePoint);
+        }
+        return false;
     }
 
     private static String rootMessage(Throwable throwable) {
