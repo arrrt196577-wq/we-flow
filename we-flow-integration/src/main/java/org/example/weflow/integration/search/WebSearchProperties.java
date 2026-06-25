@@ -19,7 +19,7 @@ public record WebSearchProperties(
     public static final String DEFAULT_PROVIDER = "jina";
     public static final int DEFAULT_MAX_RESULTS = 5;
     public static final int MAX_RESULTS_LIMIT = 10;
-    public static final Duration DEFAULT_TIMEOUT = Duration.ofSeconds(10);
+    public static final Duration DEFAULT_TIMEOUT = Duration.ofSeconds(25);
     public static final String DEFAULT_REGION = "wt-wt";
     public static final String DEFAULT_SAFE_SEARCH = "moderate";
     public static final String DEFAULT_PROXY_HOST = "127.0.0.1";

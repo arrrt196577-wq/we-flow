@@ -72,7 +72,7 @@ class JinaWebSearchClientTest {
         assertThat(accept.get()).contains(MediaType.APPLICATION_JSON_VALUE);
         assertThat(noCache.get()).isEqualTo("true");
         assertThat(maxTokens.get()).isEqualTo("8000");
-        assertThat(timeout.get()).isEqualTo("5");
+        assertThat(timeout.get()).isEqualTo("1");
     }
 
     @Test

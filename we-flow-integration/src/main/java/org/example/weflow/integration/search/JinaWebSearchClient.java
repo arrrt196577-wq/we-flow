@@ -16,6 +16,7 @@ final class JinaWebSearchClient implements WebSearchClient {
     private static final String NO_CACHE_HEADER = "x-no-cache";
     private static final String MAX_TOKENS_HEADER = "x-max-tokens";
     private static final String TIMEOUT_HEADER = "x-timeout";
+    private static final long X_TIMEOUT_BUFFER_SECONDS = 10;
 
     private final WebClient webClient;
     private final WebSearchProperties properties;
@@ -130,7 +131,7 @@ final class JinaWebSearchClient implements WebSearchClient {
     }
 
     private long jinaTimeoutSeconds() {
-        long seconds = properties.timeout().toSeconds();
+        long seconds = properties.timeout().toSeconds() - X_TIMEOUT_BUFFER_SECONDS;
         return Math.max(1, Math.min(180, seconds));
     }
 

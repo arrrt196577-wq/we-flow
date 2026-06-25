@@ -17,7 +17,7 @@ public record WebFetchProperties(
     public static final String DEFAULT_PROVIDER = "jina";
     public static final int DEFAULT_MAX_CONTENT_CHARS = 12_000;
     public static final int MAX_CONTENT_CHARS_LIMIT = 100_000;
-    public static final Duration DEFAULT_TIMEOUT = Duration.ofSeconds(10);
+    public static final Duration DEFAULT_TIMEOUT = Duration.ofSeconds(60);
     public static final String DEFAULT_PROXY_HOST = "127.0.0.1";
     public static final int DEFAULT_PROXY_PORT = 7890;
     public static final String DEFAULT_JINA_BASE_URL = "https://r.jina.ai";
