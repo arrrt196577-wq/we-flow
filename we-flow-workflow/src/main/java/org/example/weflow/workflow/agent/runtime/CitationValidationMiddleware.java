@@ -12,6 +12,7 @@ public final class CitationValidationMiddleware extends SearchAgentValidationSup
     private static final Pattern VALID_CITATION =
             Pattern.compile("\\[citation:([^\\]\\r\\n]+)]\\((https?://[^\\s)]+)\\)");
     private static final Pattern EXTERNAL_URL = Pattern.compile("https?://[^\\s)\\]]+");
+    private static final Pattern SOURCE_URL_FIELD = Pattern.compile("(?im)^\\s*url:\\s*https?://\\S+");
 
     @Override
     public MiddlewareResult beforeFinish(FinishContext context) {
@@ -51,19 +52,23 @@ public final class CitationValidationMiddleware extends SearchAgentValidationSup
     }
 
     private boolean requiresCitation(FinishContext context, CitationScan scan) {
-        return scan.mentionsExternalUrl() || hasSuccessfulWebToolResult(context);
+        return scan.mentionsExternalUrl() || hasSuccessfulWebSourceResult(context);
     }
 
-    private boolean hasSuccessfulWebToolResult(FinishContext context) {
+    private boolean hasSuccessfulWebSourceResult(FinishContext context) {
         return context.state().messages().stream()
                 .filter(ToolExecutionResultMessage.class::isInstance)
                 .map(ToolExecutionResultMessage.class::cast)
                 .filter(message -> WEB_SEARCH_TOOL.equals(message.toolName()) || WEB_FETCH_TOOL.equals(message.toolName()))
                 .map(ToolExecutionResultMessage::text)
-                .anyMatch(this::isSuccessfulToolResult);
+                .anyMatch(this::isSuccessfulWebSourceResult);
     }
 
-    private boolean isSuccessfulToolResult(String text) {
+    private boolean isSuccessfulWebSourceResult(String text) {
+        return hasSuccessStatus(text) && SOURCE_URL_FIELD.matcher(text).find();
+    }
+
+    private boolean hasSuccessStatus(String text) {
         return text != null && text.lines()
                 .map(String::trim)
                 .anyMatch(line -> "status: success".equalsIgnoreCase(line));

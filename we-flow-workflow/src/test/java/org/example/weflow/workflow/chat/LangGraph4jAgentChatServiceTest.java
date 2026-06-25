@@ -756,6 +756,34 @@ class LangGraph4jAgentChatServiceTest {
     }
 
     @Test
+    void searchAgentWebSearchNoResultsWithoutCitationShouldPass() {
+        ToolCallingChatModel chatModel = new ToolCallingChatModel(List.of(
+                AiMessage.from(toolRequest("tool-call-search", "web_search",
+                        "{\"query\":\"https://missing.example\"}")),
+                AiMessage.from(validSearchOutput("found no reliable search results", "None."))
+        ));
+        AgentExecutor searchAgent = new GraphBackedAgentExecutor(
+                DefaultAgentSpecs.searchAgentSpec(),
+                new AgentGraphFactory(chatModel, webSearchToolService("""
+                        status: success
+                        query: https://missing.example
+                        totalResults: 0
+                        results:
+                        (none)
+                        """))
+        );
+
+        AgentResult result = searchAgent.execute(
+                new AgentTask("search-web-no-results", "research", "inspect", ""),
+                new AgentContext("lead_agent", "trace-web-no-results")
+        );
+
+        assertThat(result.status()).isEqualTo(AgentStatus.SUCCESS);
+        assertThat(result.output()).contains("None.");
+        assertThat(chatModel.requests()).hasSize(2);
+    }
+
+    @Test
     void modelCanContinueReadingWhenReadFileHasMoreContent() throws IOException {
         Files.createDirectories(workspaceRoot.resolve("docs"));
         Files.writeString(workspaceRoot.resolve("docs/readme.md"), "one\ntwo\n", StandardCharsets.UTF_8);
