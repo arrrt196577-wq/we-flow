@@ -30,6 +30,8 @@ class JinaWebSearchClientTest {
 
     private HttpServer server;
     private final AtomicInteger status = new AtomicInteger(200);
+    private final AtomicInteger requestCount = new AtomicInteger();
+    private final AtomicInteger transientFailures = new AtomicInteger();
     private final AtomicReference<String> responseBody = new AtomicReference<>("[]");
     private final AtomicReference<String> rawQuery = new AtomicReference<>("");
     private final AtomicReference<String> authorization = new AtomicReference<>("");
@@ -182,10 +184,53 @@ class JinaWebSearchClientTest {
         status.set(500);
         responseBody.set("{\"error\":\"bad gateway\"}");
 
-        assertThatThrownBy(() -> client(5, 80, false)
+        assertThatThrownBy(() -> client(5, 80, false, retryDisabled())
                 .search(new WebSearchRequest("failure", 5)))
                 .isInstanceOf(WebSearchException.class)
                 .hasMessageContaining("Jina search failed");
+        assertThat(requestCount.get()).isEqualTo(1);
+    }
+
+    @Test
+    void searchShouldRetryTransientProviderFailures() {
+        transientFailures.set(2);
+        responseBody.set("""
+                [
+                  {"title":"Recovered","url":"https://example.com/recovered","description":"Recovered result"}
+                ]
+                """);
+
+        WebSearchResponse response = client(5, 80, false, fastRetry(3))
+                .search(new WebSearchRequest("retry", 5));
+
+        assertThat(response.results())
+                .containsExactly(new WebSearchResult(
+                        "Recovered",
+                        "https://example.com/recovered",
+                        "Recovered result"));
+        assertThat(requestCount.get()).isEqualTo(3);
+    }
+
+    @Test
+    void searchShouldNotRetryEmptySuccessfulResults() {
+        responseBody.set("[]");
+
+        WebSearchResponse response = client(5, 80, false, fastRetry(3))
+                .search(new WebSearchRequest("no matching result", 5));
+
+        assertThat(response.results()).isEmpty();
+        assertThat(requestCount.get()).isEqualTo(1);
+    }
+
+    @Test
+    void searchShouldNotRetryClientErrors() {
+        status.set(400);
+        responseBody.set("{\"error\":\"bad request\"}");
+
+        assertThatThrownBy(() -> client(5, 80, false, fastRetry(3))
+                .search(new WebSearchRequest("bad", 5)))
+                .isInstanceOf(WebSearchException.class);
+        assertThat(requestCount.get()).isEqualTo(1);
     }
 
 
@@ -197,14 +242,35 @@ class JinaWebSearchClientTest {
             int maxResults,
             int maxSnippetChars,
             boolean noCache,
+            WebSearchProperties.RetryProperties retry
+    ) {
+        return client(maxResults, maxSnippetChars, noCache, null, null, retry);
+    }
+
+    private JinaWebSearchClient client(
+            int maxResults,
+            int maxSnippetChars,
+            boolean noCache,
             Boolean autoChineseGl,
             String chineseGl
+    ) {
+        return client(maxResults, maxSnippetChars, noCache, autoChineseGl, chineseGl, null);
+    }
+
+    private JinaWebSearchClient client(
+            int maxResults,
+            int maxSnippetChars,
+            boolean noCache,
+            Boolean autoChineseGl,
+            String chineseGl,
+            WebSearchProperties.RetryProperties retry
     ) {
         return new JinaWebSearchClient(WebClient.builder(), new WebSearchProperties(
                 true,
                 "jina",
                 maxResults,
                 Duration.ofSeconds(5),
+                retry,
                 "wt-wt",
                 "moderate",
                 new WebSearchProperties.ProxyProperties(false, null, null, null, null),
@@ -220,6 +286,7 @@ class JinaWebSearchClientTest {
     }
 
     private void handleSearch(HttpExchange exchange) throws IOException {
+        requestCount.incrementAndGet();
         rawQuery.set(exchange.getRequestURI().getRawQuery());
         authorization.set(header(exchange, HttpHeaders.AUTHORIZATION));
         accept.set(header(exchange, HttpHeaders.ACCEPT));
@@ -229,10 +296,36 @@ class JinaWebSearchClientTest {
 
         byte[] body = responseBody.get().getBytes(StandardCharsets.UTF_8);
         exchange.getResponseHeaders().set(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE);
-        exchange.sendResponseHeaders(status.get(), body.length);
+        exchange.sendResponseHeaders(responseStatus(), body.length);
         try (OutputStream outputStream = exchange.getResponseBody()) {
             outputStream.write(body);
         }
+    }
+
+    private int responseStatus() {
+        if (transientFailures.get() > 0) {
+            transientFailures.decrementAndGet();
+            return 503;
+        }
+        return status.get();
+    }
+
+    private static WebSearchProperties.RetryProperties fastRetry(int maxAttempts) {
+        return new WebSearchProperties.RetryProperties(
+                true,
+                maxAttempts,
+                Duration.ofMillis(1),
+                Duration.ofMillis(5),
+                0.0);
+    }
+
+    private static WebSearchProperties.RetryProperties retryDisabled() {
+        return new WebSearchProperties.RetryProperties(
+                false,
+                3,
+                Duration.ofMillis(1),
+                Duration.ofMillis(5),
+                0.0);
     }
 
     private static String header(HttpExchange exchange, String name) {

@@ -3,11 +3,16 @@ package org.example.weflow.integration.fetch;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.util.concurrent.TimeoutException;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.util.StringUtils;
 import org.springframework.web.reactive.function.BodyInserters;
 import org.springframework.web.reactive.function.client.WebClient;
+import org.springframework.web.reactive.function.client.WebClientRequestException;
+import org.springframework.web.reactive.function.client.WebClientResponseException;
+import reactor.core.publisher.Mono;
+import reactor.util.retry.Retry;
 
 final class JinaWebFetchClient implements WebFetchClient {
 
@@ -36,7 +41,7 @@ final class JinaWebFetchClient implements WebFetchClient {
     public WebFetchResponse fetch(WebFetchRequest request) {
         int maxContentChars = Math.min(request.maxContentChars(), properties.maxContentChars());
         try {
-            String body = webClient.post()
+            Mono<String> response = webClient.post()
                     .uri("/")
                     .contentType(MediaType.APPLICATION_FORM_URLENCODED)
                     .headers(headers -> {
@@ -51,8 +56,9 @@ final class JinaWebFetchClient implements WebFetchClient {
                     .body(BodyInserters.fromFormData("url", request.url()))
                     .retrieve()
                     .bodyToMono(String.class)
-                    .block(properties.timeout());
+                    .timeout(properties.timeout());
 
+            String body = blockWithRetry(response);
             return parseResponse(body == null ? "" : body, request.url(), maxContentChars);
         } catch (WebFetchException e) {
             throw e;
@@ -118,6 +124,34 @@ final class JinaWebFetchClient implements WebFetchClient {
     private long jinaTimeoutSeconds() {
         long seconds = properties.timeout().toSeconds() - X_TIMEOUT_BUFFER_SECONDS;
         return Math.max(1, Math.min(180, seconds));
+    }
+
+    private String blockWithRetry(Mono<String> response) {
+        WebFetchProperties.RetryProperties retry = properties.retry();
+        if (!retry.isEnabled()) {
+            return response.block();
+        }
+        return response.retryWhen(Retry.backoff(retry.maxRetries(), retry.initialBackoff())
+                        .maxBackoff(retry.maxBackoff())
+                        .jitter(retry.jitter())
+                        .filter(this::isRetryable)
+                        .onRetryExhaustedThrow((retryBackoffSpec, retrySignal) -> retrySignal.failure()))
+                .block();
+    }
+
+    private boolean isRetryable(Throwable throwable) {
+        Throwable current = throwable;
+        while (current != null) {
+            if (current instanceof TimeoutException || current instanceof WebClientRequestException) {
+                return true;
+            }
+            if (current instanceof WebClientResponseException responseException) {
+                int status = responseException.getStatusCode().value();
+                return status == 429 || status >= 500;
+            }
+            current = current.getCause();
+        }
+        return false;
     }
 
     private static String rootMessage(Throwable throwable) {

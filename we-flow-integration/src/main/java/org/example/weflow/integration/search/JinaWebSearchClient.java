@@ -5,12 +5,17 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.TimeoutException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.util.StringUtils;
 import org.springframework.web.reactive.function.client.WebClient;
+import org.springframework.web.reactive.function.client.WebClientRequestException;
+import org.springframework.web.reactive.function.client.WebClientResponseException;
+import reactor.core.publisher.Mono;
+import reactor.util.retry.Retry;
 
 final class JinaWebSearchClient implements WebSearchClient {
 
@@ -43,7 +48,7 @@ final class JinaWebSearchClient implements WebSearchClient {
         log.info("Jina search request query={} maxResults={} regionParam={}",
                 cleanText(request.query()), maxResults, regionLogField(gl));
         try {
-            String body = webClient.get()
+            Mono<String> response = webClient.get()
                     .uri(uriBuilder -> {
                         var builder = uriBuilder
                                 .path("/")
@@ -65,8 +70,9 @@ final class JinaWebSearchClient implements WebSearchClient {
                     })
                     .retrieve()
                     .bodyToMono(String.class)
-                    .block(properties.timeout());
+                    .timeout(properties.timeout());
 
+            String body = blockWithRetry(response);
             List<WebSearchResult> results = parseResults(
                     body == null ? "" : body,
                     maxResults,
@@ -148,6 +154,34 @@ final class JinaWebSearchClient implements WebSearchClient {
     private long jinaTimeoutSeconds() {
         long seconds = properties.timeout().toSeconds() - X_TIMEOUT_BUFFER_SECONDS;
         return Math.max(1, Math.min(180, seconds));
+    }
+
+    private String blockWithRetry(Mono<String> response) {
+        WebSearchProperties.RetryProperties retry = properties.retry();
+        if (!retry.isEnabled()) {
+            return response.block();
+        }
+        return response.retryWhen(Retry.backoff(retry.maxRetries(), retry.initialBackoff())
+                        .maxBackoff(retry.maxBackoff())
+                        .jitter(retry.jitter())
+                        .filter(this::isRetryable)
+                        .onRetryExhaustedThrow((retryBackoffSpec, retrySignal) -> retrySignal.failure()))
+                .block();
+    }
+
+    private boolean isRetryable(Throwable throwable) {
+        Throwable current = throwable;
+        while (current != null) {
+            if (current instanceof TimeoutException || current instanceof WebClientRequestException) {
+                return true;
+            }
+            if (current instanceof WebClientResponseException responseException) {
+                int status = responseException.getStatusCode().value();
+                return status == 429 || status >= 500;
+            }
+            current = current.getCause();
+        }
+        return false;
     }
 
     private String resolveGl(String query) {

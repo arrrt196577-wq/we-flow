@@ -25,6 +25,8 @@ class JinaWebFetchClientTest {
 
     private HttpServer server;
     private final AtomicInteger status = new AtomicInteger(200);
+    private final AtomicInteger requestCount = new AtomicInteger();
+    private final AtomicInteger transientFailures = new AtomicInteger();
     private final AtomicReference<String> responseBody = new AtomicReference<>("{}");
     private final AtomicReference<String> method = new AtomicReference<>("");
     private final AtomicReference<String> requestBody = new AtomicReference<>("");
@@ -125,10 +127,44 @@ class JinaWebFetchClientTest {
         status.set(500);
         responseBody.set("{\"error\":\"bad gateway\"}");
 
-        assertThatThrownBy(() -> client(80, false)
+        assertThatThrownBy(() -> client(80, false, retryDisabled())
                 .fetch(new WebFetchRequest("https://example.com/failure", 10)))
                 .isInstanceOf(WebFetchException.class)
                 .hasMessageContaining("Jina fetch failed");
+        assertThat(requestCount.get()).isEqualTo(1);
+    }
+
+    @Test
+    void fetchShouldRetryTransientProviderFailures() {
+        transientFailures.set(1);
+        responseBody.set("""
+                {
+                  "data": {
+                    "title": "Recovered",
+                    "url": "https://example.com/recovered",
+                    "content": "Recovered content"
+                  }
+                }
+                """);
+
+        WebFetchResponse response = client(80, false, fastRetry(2))
+                .fetch(new WebFetchRequest("https://example.com/retry", 80));
+
+        assertThat(response.title()).isEqualTo("Recovered");
+        assertThat(response.resolvedUrl()).isEqualTo("https://example.com/recovered");
+        assertThat(response.content()).isEqualTo("Recovered content");
+        assertThat(requestCount.get()).isEqualTo(2);
+    }
+
+    @Test
+    void fetchShouldNotRetryClientErrors() {
+        status.set(400);
+        responseBody.set("{\"error\":\"bad request\"}");
+
+        assertThatThrownBy(() -> client(80, false, fastRetry(2))
+                .fetch(new WebFetchRequest("https://example.com/bad", 10)))
+                .isInstanceOf(WebFetchException.class);
+        assertThat(requestCount.get()).isEqualTo(1);
     }
 
     @Test
@@ -139,11 +175,20 @@ class JinaWebFetchClientTest {
     }
 
     private JinaWebFetchClient client(int maxContentChars, boolean noCache) {
+        return client(maxContentChars, noCache, null);
+    }
+
+    private JinaWebFetchClient client(
+            int maxContentChars,
+            boolean noCache,
+            WebFetchProperties.RetryProperties retry
+    ) {
         return new JinaWebFetchClient(WebClient.builder(), new WebFetchProperties(
                 true,
                 "jina",
                 maxContentChars,
                 Duration.ofSeconds(5),
+                retry,
                 new WebFetchProperties.ProxyProperties(false, null, null, null, null),
                 new WebFetchProperties.JinaProperties(
                         "test-key",
@@ -154,6 +199,7 @@ class JinaWebFetchClientTest {
     }
 
     private void handleFetch(HttpExchange exchange) throws IOException {
+        requestCount.incrementAndGet();
         method.set(exchange.getRequestMethod());
         requestBody.set(new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
         authorization.set(header(exchange, HttpHeaders.AUTHORIZATION));
@@ -165,10 +211,36 @@ class JinaWebFetchClientTest {
 
         byte[] body = responseBody.get().getBytes(StandardCharsets.UTF_8);
         exchange.getResponseHeaders().set(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE);
-        exchange.sendResponseHeaders(status.get(), body.length);
+        exchange.sendResponseHeaders(responseStatus(), body.length);
         try (OutputStream outputStream = exchange.getResponseBody()) {
             outputStream.write(body);
         }
+    }
+
+    private int responseStatus() {
+        if (transientFailures.get() > 0) {
+            transientFailures.decrementAndGet();
+            return 503;
+        }
+        return status.get();
+    }
+
+    private static WebFetchProperties.RetryProperties fastRetry(int maxAttempts) {
+        return new WebFetchProperties.RetryProperties(
+                true,
+                maxAttempts,
+                Duration.ofMillis(1),
+                Duration.ofMillis(5),
+                0.0);
+    }
+
+    private static WebFetchProperties.RetryProperties retryDisabled() {
+        return new WebFetchProperties.RetryProperties(
+                false,
+                2,
+                Duration.ofMillis(1),
+                Duration.ofMillis(5),
+                0.0);
     }
 
     private static String header(HttpExchange exchange, String name) {
