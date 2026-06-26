@@ -93,6 +93,109 @@ class MiddlewareManagerTest {
     }
 
     @Test
+    void emptyTurnInitializationChainCallsTerminal() {
+        MiddlewareManager manager = MiddlewareManager.empty();
+
+        Map<String, Object> update = manager.aroundTurnInitialization(
+                turnInitializationContext(),
+                context -> Map.of("base", true)
+        );
+
+        assertThat(update).containsEntry("base", true);
+    }
+
+    @Test
+    void turnInitializationAroundMiddlewareUsesOnionOrder() {
+        List<String> order = new ArrayList<>();
+        WeflowMiddleware first = new WeflowMiddleware() {
+            @Override
+            public Map<String, Object> aroundTurnInitialization(
+                    TurnInitializationContext context,
+                    TurnInitializationCall next
+            ) {
+                order.add("first-before");
+                Map<String, Object> result = next.call(context);
+                order.add("first-after");
+                return result;
+            }
+        };
+        WeflowMiddleware second = new WeflowMiddleware() {
+            @Override
+            public Map<String, Object> aroundTurnInitialization(
+                    TurnInitializationContext context,
+                    TurnInitializationCall next
+            ) {
+                order.add("second-before");
+                Map<String, Object> result = next.call(context);
+                order.add("second-after");
+                return result;
+            }
+        };
+        MiddlewareManager manager = new MiddlewareManager(List.of(first, second));
+
+        Map<String, Object> update = manager.aroundTurnInitialization(turnInitializationContext(), context -> {
+            order.add("terminal");
+            return Map.of("done", true);
+        });
+
+        assertThat(update).containsEntry("done", true);
+        assertThat(order).containsExactly(
+                "first-before",
+                "second-before",
+                "terminal",
+                "second-after",
+                "first-after"
+        );
+    }
+
+    @Test
+    void runtimeLimitMiddlewareInitializesOverallDeadlineWhenConfigured() {
+        RuntimeLimitMiddleware middleware = new RuntimeLimitMiddleware();
+        long before = System.currentTimeMillis();
+
+        Map<String, Object> update = middleware.aroundTurnInitialization(
+                new TurnInitializationContext(
+                        new AgentRunContext(agentSpecWithOverallTimeout(), "thread-1"),
+                        new AgentThreadState(Map.of())
+                ),
+                context -> Map.of("base", true)
+        );
+
+        long after = System.currentTimeMillis();
+        assertThat(update)
+                .containsEntry("base", true)
+                .containsKey(AgentThreadState.DEADLINE_EPOCH_MILLIS);
+        assertThat((Long) update.get(AgentThreadState.DEADLINE_EPOCH_MILLIS))
+                .isBetween(before + 30_000, after + 30_000);
+    }
+
+    @Test
+    void runtimeLimitMiddlewareDoesNotInitializeDeadlineWhenUnconfigured() {
+        RuntimeLimitMiddleware middleware = new RuntimeLimitMiddleware();
+
+        Map<String, Object> update = middleware.aroundTurnInitialization(
+                turnInitializationContext(),
+                context -> Map.of("base", true)
+        );
+
+        assertThat(update).containsOnly(Map.entry("base", true));
+    }
+
+    @Test
+    void leadToolCallLimitMiddlewareInitializesToolCallCounts() {
+        LeadToolCallLimitMiddleware middleware = new LeadToolCallLimitMiddleware();
+
+        Map<String, Object> update = middleware.aroundTurnInitialization(
+                turnInitializationContext(),
+                context -> Map.of("base", true)
+        );
+
+        assertThat(update)
+                .containsEntry("base", true)
+                .containsEntry(AgentThreadState.LEAD_TOOL_CALL_COUNTS, Map.of());
+    }
+
+    @Test
     void emptyRunChainCallsTerminal() {
         MiddlewareManager manager = MiddlewareManager.empty();
         AgentThreadState expected = new AgentThreadState(Map.of());
@@ -191,6 +294,10 @@ class MiddlewareManagerTest {
         return new FinishContext(runContext(), new AgentThreadState(Map.of()), "output");
     }
 
+    private TurnInitializationContext turnInitializationContext() {
+        return new TurnInitializationContext(runContext(), new AgentThreadState(Map.of()));
+    }
+
     private ModelCallContext modelContext() {
         return new ModelCallContext(
                 new AgentRunContext(agentSpec(), "thread-1"),
@@ -210,6 +317,15 @@ class MiddlewareManagerTest {
                 "",
                 AgentToolPolicy.none(),
                 AgentRuntimeLimits.lead(3, Duration.ofSeconds(5), null)
+        );
+    }
+
+    private AgentSpec agentSpecWithOverallTimeout() {
+        return new AgentSpec(
+                new AgentDefinition("test_subagent", "Test Subagent", AgentType.SUB, "Test subagent.", true),
+                "",
+                AgentToolPolicy.none(),
+                AgentRuntimeLimits.subagent(3, Duration.ofSeconds(5), Duration.ofSeconds(30))
         );
     }
 }

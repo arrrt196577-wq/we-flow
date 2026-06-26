@@ -2,8 +2,10 @@ package org.example.weflow.workflow.tool;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-import java.time.Duration;
+import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.List;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -11,11 +13,14 @@ import org.bsc.langgraph4j.langchain4j.tool.LC4jToolService;
 import org.example.weflow.agent.config.AgentDelegationConfiguration;
 import org.example.weflow.agent.subagent.InMemorySubAgentRegistry;
 import org.example.weflow.agent.subagent.SimpleTaskSubAgentExecutor;
+import org.example.weflow.agent.tool.SkillTools;
 import org.example.weflow.agent.tool.TaskDelegationTool;
 import org.example.weflow.agent.tool.WebFetchTools;
 import org.example.weflow.agent.tool.WebSearchTools;
 import org.example.weflow.agent.tool.WorkspaceFileTools;
 import org.example.weflow.core.agent.AgentExecutor;
+import org.example.weflow.core.skill.DefaultSkillService;
+import org.example.weflow.core.skill.SkillProperties;
 import org.example.weflow.core.workspace.DefaultWorkspaceService;
 import org.example.weflow.core.workspace.WorkspaceProperties;
 import org.example.weflow.integration.fetch.WebFetchClient;
@@ -36,16 +41,18 @@ class AgentToolConfigurationTest {
     Path workspaceRoot;
 
     @Test
-    void shouldRegisterWorkspaceFileToolsAsLangChainToolSpecifications() {
+    void shouldRegisterWorkspaceAndSkillToolsAsLangChainToolSpecifications() throws IOException {
+        Path skillRoot = Files.createDirectory(workspaceRoot.resolve("skill"));
         WorkspaceFileTools fileTools = new WorkspaceFileTools(
                 new DefaultWorkspaceService(new WorkspaceProperties(workspaceRoot.toString())));
-        LC4jToolService toolService = new AgentToolConfiguration().lc4jToolService(List.of(fileTools));
+        SkillTools skillTools = new SkillTools(new DefaultSkillService(new SkillProperties(skillRoot.toString())));
+        LC4jToolService toolService = new AgentToolConfiguration().lc4jToolService(List.of(fileTools, skillTools));
 
         Set<String> toolNames = toolService.toolSpecifications().stream()
                 .map(specification -> specification.name())
                 .collect(Collectors.toSet());
 
-        assertThat(toolNames).containsExactlyInAnyOrder("find_files", "read_file", "list_dir");
+        assertThat(toolNames).containsExactlyInAnyOrder("find_files", "read_file", "list_dir", "read_skill");
     }
 
     @Test

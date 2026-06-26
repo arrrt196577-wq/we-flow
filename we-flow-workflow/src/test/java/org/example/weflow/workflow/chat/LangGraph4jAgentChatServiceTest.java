@@ -36,6 +36,7 @@ import org.bsc.langgraph4j.langchain4j.tool.LC4jToolService;
 import org.example.weflow.agent.subagent.InMemorySubAgentRegistry;
 import org.example.weflow.agent.subagent.SubAgentRegistry;
 import org.example.weflow.agent.tool.AgentTool;
+import org.example.weflow.agent.tool.SkillTools;
 import org.example.weflow.agent.tool.TaskDelegationTool;
 import org.example.weflow.agent.tool.WorkspaceFileTools;
 import org.example.weflow.core.agent.AgentContext;
@@ -51,6 +52,8 @@ import org.example.weflow.core.service.IChatService;
 import org.example.weflow.core.service.dto.ChatStreamChunk;
 import org.example.weflow.core.service.dto.ChatStreamRequest;
 import org.example.weflow.core.service.impl.ChatServiceImpl;
+import org.example.weflow.core.skill.DefaultSkillService;
+import org.example.weflow.core.skill.SkillProperties;
 import org.example.weflow.core.workspace.DefaultWorkspaceService;
 import org.example.weflow.core.workspace.WorkspaceProperties;
 import org.example.weflow.workflow.agent.AgentGraphFactory;
@@ -579,13 +582,15 @@ class LangGraph4jAgentChatServiceTest {
     }
 
     @Test
-    void searchAgentShouldSeeOnlySearchAndReadOnlyFileTools() {
+    void searchAgentShouldSeeOnlySearchSkillAndReadOnlyFileTools() throws IOException {
+        Path skillRoot = Files.createDirectory(workspaceRoot.resolve("skill"));
         ToolCallingChatModel chatModel = new ToolCallingChatModel(List.of(
                 AiMessage.from(validSearchOutput("call-1 messages=user:", "None."))
         ));
         LC4jToolService toolService = LC4jToolService.builder()
                 .toolsFromObject(new WorkspaceFileTools(
                         new DefaultWorkspaceService(new WorkspaceProperties(workspaceRoot.toString()))))
+                .toolsFromObject(new SkillTools(new DefaultSkillService(new SkillProperties(skillRoot.toString()))))
                 .toolsFromObject(new TestWebSearchTool("status: success\ntotalResults: 0\n"))
                 .toolsFromObject(new TestWebFetchTool("status: success\nurl: https://example.com\ncontent:\ncontent\n"))
                 .toolsFromObject(new TaskDelegationTool(new InMemorySubAgentRegistry(defaultSubAgents())))
@@ -605,9 +610,11 @@ class LangGraph4jAgentChatServiceTest {
         assertThat(result.startedAt()).isNotNull();
         assertThat(result.completedAt()).isNotNull();
         assertThat(toolNames(chatModel.requests().getFirst()))
-                .containsExactlyInAnyOrder("find_files", "read_file", "list_dir", "web_search", "web_fetch");
+                .containsExactlyInAnyOrder("find_files", "read_file", "list_dir", "read_skill", "web_search",
+                        "web_fetch");
         assertThat(systemPrompt(chatModel.requests().getFirst()))
                 .contains("read-only research subagent")
+                .contains("read_skill")
                 .contains("web_fetch")
                 .contains("Do NOT ask for clarification")
                 .contains("Recommended next steps for the lead agent")

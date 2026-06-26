@@ -45,6 +45,8 @@ mvn -pl we-flow-app -am clean package
 - Follow the existing module boundaries and code style.
 - Before changing code, inspect the relevant module `pom.xml`, package layout,
   and nearby implementations.
+- When you need to understand the current project state, read the relevant
+  files under `docs/`.
 - For complex functions or methods, especially those longer than about 10 lines,
   add a brief comment summarizing their purpose.
 - Existing database table structures are documented in

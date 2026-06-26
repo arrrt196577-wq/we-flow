@@ -21,6 +21,21 @@ public final class MiddlewareManager {
         return new MiddlewareManager(List.of());
     }
 
+    public Optional<MiddlewareResult> beforeTurnInitialization(TurnInitializationContext context) {
+        return firstBlocking(middleware -> middleware.beforeTurnInitialization(context));
+    }
+
+    public Map<String, Object> aroundTurnInitialization(
+            TurnInitializationContext context,
+            WeflowMiddleware.TurnInitializationCall terminal
+    ) {
+        return invokeTurnInitializationMiddlewareChain(0, context, terminal);
+    }
+
+    public Optional<MiddlewareResult> afterTurnInitialization(TurnInitializationContext context) {
+        return firstBlocking(middleware -> middleware.afterTurnInitialization(context));
+    }
+
     public Optional<MiddlewareResult> beforeRun(AgentRunContext context) {
         return firstBlocking(middleware -> middleware.beforeRun(context));
     }
@@ -95,6 +110,21 @@ public final class MiddlewareManager {
             }
         }
         return Optional.empty();
+    }
+
+    private Map<String, Object> invokeTurnInitializationMiddlewareChain(
+            int index,
+            TurnInitializationContext context,
+            WeflowMiddleware.TurnInitializationCall terminal
+    ) {
+        if (index >= middlewares.size()) {
+            return terminal.call(context);
+        }
+        WeflowMiddleware middleware = middlewares.get(index);
+        return middleware.aroundTurnInitialization(
+                context,
+                nextContext -> invokeTurnInitializationMiddlewareChain(index + 1, nextContext, terminal)
+        );
     }
 
     private AgentThreadState invokeRunMiddlewareChain(

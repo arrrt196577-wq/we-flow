@@ -29,10 +29,14 @@
 
 | 阶段＼边界 | `before*`（阻断式） | `around*`（环绕式） | `after*`（阻断式） |
 |---|---|---|---|
+| **TurnInitialization** | `beforeTurnInitialization` | `aroundTurnInitialization` | `afterTurnInitialization` |
 | **Run** | `beforeRun` | `aroundRun` | `afterRun` |
 | **Model** | `beforeModel` | `aroundModel` | `afterModel` |
 | **Tool** | `beforeTool` | `aroundTool` | `afterTool` |
 | **Finish** | `beforeFinish` | `aroundFinish` | `afterFinish` |
+
+- `aroundTurnInitialization` returns `Map<String, Object>` through `TurnInitializationCall`
+  and is currently wired by `AgentGraphFactory.initializeTurnNode`.
 
 - 网格已全量定义于 `WeflowMiddleware` 接口 + `MiddlewareManager` 调度层。
 - `around*` 钩子的续延接口与终端返回类型：`aroundRun → AgentThreadState`（`RunCall`）、
@@ -50,9 +54,11 @@
 ### 现状/迁移
 
 - 命名收敛已完成：`onRunStart → beforeRun`、`onRunEnd → afterRun`，全量钩子均符合本约定。
-- 网格 12 个钩子已在 `WeflowMiddleware` 接口与 `MiddlewareManager` 全部建出（预留扩展面）。
-- **接线现状**：实际接入调用点的仅 `aroundModel`（`ModelRuntime`）、`aroundTool`（`ToolRuntime`）、
-  `beforeFinish`（`AgentGraphFactory.finalizeNode`）。其余钩子（含本次新增的 `aroundRun` /
+- 网格 15 个钩子已在 `WeflowMiddleware` 接口与 `MiddlewareManager` 全部建出（预留扩展面）。
+- **接线现状**：实际接入调用点的仅 `aroundTurnInitialization`（`AgentGraphFactory.initializeTurnNode`）、
+  `aroundModel`（`ModelRuntime`）、`aroundTool`（`ToolRuntime`）、
+  `beforeFinish`（`AgentGraphFactory.finalizeNode`）。其余钩子（含 `beforeTurnInitialization` /
+  `afterTurnInitialization` / 本次新增的 `aroundRun` /
   `aroundFinish` / `afterFinish` 及既有的 `beforeRun` / `afterRun` / `beforeModel` / `afterModel` /
   `beforeTool` / `afterTool`）已定义但**尚未接线**，待有真实消费方时在对应调用点接入即可。
 

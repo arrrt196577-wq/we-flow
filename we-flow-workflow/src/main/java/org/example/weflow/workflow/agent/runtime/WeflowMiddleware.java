@@ -6,6 +6,9 @@ import org.bsc.langgraph4j.action.Command;
 import org.example.weflow.workflow.agent.AgentThreadState;
 
 /**
+ * Hook phases currently include TurnInitialization / Run / Model / Tool / Finish.
+ * Every hook follows the before / around / after + phase-name grid.
+ *
  * Agent 运行期中间件扩展点，提供两种风格的钩子，按需重写需要的方法即可。
  *
  * <p>命名遵循统一语法 {@code <边界><阶段>}：边界为 before / around / after，
@@ -26,6 +29,21 @@ import org.example.weflow.workflow.agent.AgentThreadState;
  * 注意 aroundModel 包裹的是流式调用，若不调用 {@code next} 直接返回，会跳过 streaming（partialSink 收不到增量）。
  */
 public interface WeflowMiddleware {
+
+    default MiddlewareResult beforeTurnInitialization(TurnInitializationContext context) {
+        return MiddlewareResult.continueProcessing();
+    }
+
+    default Map<String, Object> aroundTurnInitialization(
+            TurnInitializationContext context,
+            TurnInitializationCall next
+    ) {
+        return next.call(context);
+    }
+
+    default MiddlewareResult afterTurnInitialization(TurnInitializationContext context) {
+        return MiddlewareResult.continueProcessing();
+    }
 
     default MiddlewareResult beforeRun(AgentRunContext context) {
         return MiddlewareResult.continueProcessing();
@@ -73,6 +91,11 @@ public interface WeflowMiddleware {
 
     default MiddlewareResult afterFinish(FinishContext context) {
         return MiddlewareResult.continueProcessing();
+    }
+
+    @FunctionalInterface
+    interface TurnInitializationCall {
+        Map<String, Object> call(TurnInitializationContext context);
     }
 
     @FunctionalInterface

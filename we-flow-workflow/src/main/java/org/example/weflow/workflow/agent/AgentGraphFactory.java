@@ -15,7 +15,6 @@ import dev.langchain4j.data.message.UserMessage;
 import dev.langchain4j.model.chat.StreamingChatModel;
 import dev.langchain4j.model.chat.request.ChatRequest;
 import java.time.Duration;
-import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -42,11 +41,14 @@ import org.example.weflow.core.service.dto.ChatStreamChunk;
 import org.example.weflow.workflow.agent.runtime.AgentRunContext;
 import org.example.weflow.workflow.agent.runtime.CitationValidationMiddleware;
 import org.example.weflow.workflow.agent.runtime.FinishContext;
+import org.example.weflow.workflow.agent.runtime.LeadToolCallLimitMiddleware;
 import org.example.weflow.workflow.agent.runtime.MiddlewareManager;
 import org.example.weflow.workflow.agent.runtime.MiddlewareResult;
 import org.example.weflow.workflow.agent.runtime.ModelRuntime;
+import org.example.weflow.workflow.agent.runtime.RuntimeLimitMiddleware;
 import org.example.weflow.workflow.agent.runtime.SearchAgentOutputValidationMiddleware;
 import org.example.weflow.workflow.agent.runtime.ToolRuntime;
+import org.example.weflow.workflow.agent.runtime.TurnInitializationContext;
 import org.example.weflow.workflow.agent.runtime.WeflowMiddleware;
 
 @Slf4j
@@ -86,7 +88,7 @@ public class AgentGraphFactory {
     ) {
         this.toolService = toolService;
         this.sinkRegistry = new AgentStreamSinkRegistry();
-        this.middlewareManager = new MiddlewareManager(middlewares);
+        this.middlewareManager = new MiddlewareManager(middlewareChain(middlewares));
         this.modelRuntime = new ModelRuntime(streamingChatModel, sinkRegistry, middlewareManager);
         this.toolRuntime = new ToolRuntime(toolService, middlewareManager, AgentGraphFactory.class.getSimpleName());
     }
@@ -96,6 +98,16 @@ public class AgentGraphFactory {
                 new SearchAgentOutputValidationMiddleware(),
                 new CitationValidationMiddleware()
         );
+    }
+
+    private static List<WeflowMiddleware> middlewareChain(List<WeflowMiddleware> middlewares) {
+        List<WeflowMiddleware> chain = new ArrayList<>();
+        chain.add(new RuntimeLimitMiddleware());
+        chain.add(new LeadToolCallLimitMiddleware());
+        if (middlewares != null) {
+            chain.addAll(middlewares);
+        }
+        return chain;
     }
 
     public AgentStreamSinkRegistry sinkRegistry() {
@@ -113,7 +125,7 @@ public class AgentGraphFactory {
                     new LC4jStateSerializer<>(AgentThreadState::new)
             );
 
-            graph.addNode(TURN_INITIALIZATION_NODE, node_async(runtime::initializeTurn))
+            graph.addNode(TURN_INITIALIZATION_NODE, node_async(runtime::initializeTurnNode))
                     .addNode(MODEL_NODE,
                             org.bsc.langgraph4j.action.AsyncNodeActionWithConfig.node_async(runtime::modelNode))
                     .addNode(TOOL_NODE, node_async(runtime::toolNode))
@@ -153,20 +165,20 @@ public class AgentGraphFactory {
         /**
          * Resets per-turn state and establishes the overall deadline before graph execution begins.
          */
-        private Map<String, Object> initializeTurn(AgentThreadState state) {
+        private Map<String, Object> initializeTurnNode(AgentThreadState state) {
+            TurnInitializationContext context = new TurnInitializationContext(runContext(null), state);
+            return middlewareManager.aroundTurnInitialization(context, this::baseInitializeTurnUpdate);
+        }
+
+        private Map<String, Object> baseInitializeTurnUpdate(TurnInitializationContext context) {
             Map<String, Object> update = new LinkedHashMap<>();
-            update.put(MessagesState.MESSAGES_STATE, List.of(UserMessage.from(state.currentUserMessage())));
+            update.put(MessagesState.MESSAGES_STATE, List.of(UserMessage.from(context.state().currentUserMessage())));
             update.put(AgentThreadState.CURRENT_ASSISTANT_THINKING, "");
             update.put(AgentThreadState.LOOP_COUNT, 0);
             update.put(AgentThreadState.FAILURE_CODE, "");
             update.put(AgentThreadState.FAILURE_MESSAGE, "");
-            update.put(AgentThreadState.LEAD_TOOL_CALL_COUNTS, Map.of());
             update.put(AgentThreadState.OUTPUT_VALIDATION_RETRY_COUNT, 0);
             update.put(AgentThreadState.OUTPUT_VALIDATION_RETRY_REQUESTED, false);
-            if (spec.runtimeLimits().hasOverallTimeout()) {
-                update.put(AgentThreadState.DEADLINE_EPOCH_MILLIS,
-                        Instant.now().plus(spec.runtimeLimits().overallTimeout()).toEpochMilli());
-            }
             return update;
         }
 
