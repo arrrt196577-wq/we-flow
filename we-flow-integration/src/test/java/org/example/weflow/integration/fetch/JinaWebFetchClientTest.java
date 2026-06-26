@@ -3,6 +3,10 @@ package org.example.weflow.integration.fetch;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import java.io.IOException;
@@ -17,6 +21,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.web.reactive.function.client.WebClient;
@@ -27,6 +32,7 @@ class JinaWebFetchClientTest {
     private final AtomicInteger status = new AtomicInteger(200);
     private final AtomicInteger requestCount = new AtomicInteger();
     private final AtomicInteger transientFailures = new AtomicInteger();
+    private final AtomicInteger transientFailureStatus = new AtomicInteger(503);
     private final AtomicReference<String> responseBody = new AtomicReference<>("{}");
     private final AtomicReference<String> method = new AtomicReference<>("");
     private final AtomicReference<String> requestBody = new AtomicReference<>("");
@@ -157,6 +163,43 @@ class JinaWebFetchClientTest {
     }
 
     @Test
+    void fetchShouldLogRetryBeforeRetryingTransientProviderFailure() {
+        transientFailures.set(1);
+        transientFailureStatus.set(524);
+        responseBody.set("""
+                {
+                  "data": {
+                    "title": "Recovered",
+                    "url": "https://example.com/recovered",
+                    "content": "Recovered content"
+                  }
+                }
+                """);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        Logger logger = (Logger) LoggerFactory.getLogger(JinaWebFetchClient.class);
+        appender.start();
+        logger.addAppender(appender);
+        try {
+            WebFetchResponse response = client(80, false, fastRetry(2))
+                    .fetch(new WebFetchRequest("https://example.com/retry-log", 80));
+
+            assertThat(response.title()).isEqualTo("Recovered");
+            assertThat(requestCount.get()).isEqualTo(2);
+            assertThat(appender.list)
+                    .anySatisfy(event -> {
+                        assertThat(event.getLevel()).isEqualTo(Level.WARN);
+                        assertThat(event.getFormattedMessage()).contains("operation=jina_fetch");
+                        assertThat(event.getFormattedMessage()).contains("attempt=2");
+                        assertThat(event.getFormattedMessage()).contains("maxAttempts=2");
+                        assertThat(event.getFormattedMessage()).contains("httpStatus=524");
+                    });
+        } finally {
+            logger.detachAppender(appender);
+            appender.stop();
+        }
+    }
+
+    @Test
     void fetchShouldNotRetryClientErrors() {
         status.set(400);
         responseBody.set("{\"error\":\"bad request\"}");
@@ -220,7 +263,7 @@ class JinaWebFetchClientTest {
     private int responseStatus() {
         if (transientFailures.get() > 0) {
             transientFailures.decrementAndGet();
-            return 503;
+            return transientFailureStatus.get();
         }
         return status.get();
     }

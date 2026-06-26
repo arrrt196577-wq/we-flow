@@ -3,6 +3,10 @@ package org.example.weflow.integration.search;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import java.io.IOException;
@@ -17,6 +21,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.client.reactive.ReactorClientHttpConnector;
@@ -32,6 +37,7 @@ class JinaWebSearchClientTest {
     private final AtomicInteger status = new AtomicInteger(200);
     private final AtomicInteger requestCount = new AtomicInteger();
     private final AtomicInteger transientFailures = new AtomicInteger();
+    private final AtomicInteger transientFailureStatus = new AtomicInteger(503);
     private final AtomicReference<String> responseBody = new AtomicReference<>("[]");
     private final AtomicReference<String> rawQuery = new AtomicReference<>("");
     private final AtomicReference<String> authorization = new AtomicReference<>("");
@@ -212,6 +218,39 @@ class JinaWebSearchClientTest {
     }
 
     @Test
+    void searchShouldLogRetryBeforeRetryingTransientProviderFailure() {
+        transientFailures.set(1);
+        transientFailureStatus.set(524);
+        responseBody.set("""
+                [
+                  {"title":"Recovered","url":"https://example.com/recovered","description":"Recovered result"}
+                ]
+                """);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        Logger logger = (Logger) LoggerFactory.getLogger(JinaWebSearchClient.class);
+        appender.start();
+        logger.addAppender(appender);
+        try {
+            WebSearchResponse response = client(5, 80, false, fastRetry(3))
+                    .search(new WebSearchRequest("retry log", 5));
+
+            assertThat(response.results()).hasSize(1);
+            assertThat(requestCount.get()).isEqualTo(2);
+            assertThat(appender.list)
+                    .anySatisfy(event -> {
+                        assertThat(event.getLevel()).isEqualTo(Level.WARN);
+                        assertThat(event.getFormattedMessage()).contains("operation=jina_search");
+                        assertThat(event.getFormattedMessage()).contains("attempt=2");
+                        assertThat(event.getFormattedMessage()).contains("maxAttempts=3");
+                        assertThat(event.getFormattedMessage()).contains("httpStatus=524");
+                    });
+        } finally {
+            logger.detachAppender(appender);
+            appender.stop();
+        }
+    }
+
+    @Test
     void searchShouldNotRetryEmptySuccessfulResults() {
         responseBody.set("[]");
 
@@ -305,7 +344,7 @@ class JinaWebSearchClientTest {
     private int responseStatus() {
         if (transientFailures.get() > 0) {
             transientFailures.decrementAndGet();
-            return 503;
+            return transientFailureStatus.get();
         }
         return status.get();
     }

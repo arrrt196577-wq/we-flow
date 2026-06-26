@@ -4,6 +4,8 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.concurrent.TimeoutException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.util.StringUtils;
@@ -16,6 +18,7 @@ import reactor.util.retry.Retry;
 
 final class JinaWebFetchClient implements WebFetchClient {
 
+    private static final Logger log = LoggerFactory.getLogger(JinaWebFetchClient.class);
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
     private static final String NO_CACHE_HEADER = "x-no-cache";
     private static final String MAX_TOKENS_HEADER = "x-max-tokens";
@@ -58,7 +61,7 @@ final class JinaWebFetchClient implements WebFetchClient {
                     .bodyToMono(String.class)
                     .timeout(properties.timeout());
 
-            String body = blockWithRetry(response);
+            String body = blockWithRetry(response, request.url());
             return parseResponse(body == null ? "" : body, request.url(), maxContentChars);
         } catch (WebFetchException e) {
             throw e;
@@ -126,7 +129,7 @@ final class JinaWebFetchClient implements WebFetchClient {
         return Math.max(1, Math.min(180, seconds));
     }
 
-    private String blockWithRetry(Mono<String> response) {
+    private String blockWithRetry(Mono<String> response, String url) {
         WebFetchProperties.RetryProperties retry = properties.retry();
         if (!retry.isEnabled()) {
             return response.block();
@@ -135,8 +138,29 @@ final class JinaWebFetchClient implements WebFetchClient {
                         .maxBackoff(retry.maxBackoff())
                         .jitter(retry.jitter())
                         .filter(this::isRetryable)
+                        .doBeforeRetry(retrySignal -> logRetry(retrySignal.failure(),
+                                retrySignal.totalRetries() + 2,
+                                retry.maxAttempts(),
+                                url))
                         .onRetryExhaustedThrow((retryBackoffSpec, retrySignal) -> retrySignal.failure()))
                 .block();
+    }
+
+    private void logRetry(Throwable failure, long attempt, int maxAttempts, String url) {
+        log.warn("Jina provider retry operation=jina_fetch attempt={} maxAttempts={} reason={} url={}",
+                attempt, maxAttempts, retryReason(failure), cleanMetadata(url));
+    }
+
+    private String retryReason(Throwable throwable) {
+        Throwable current = throwable;
+        while (current != null) {
+            if (current instanceof WebClientResponseException responseException) {
+                return "httpStatus=" + responseException.getStatusCode().value();
+            }
+            current = current.getCause();
+        }
+        Throwable root = rootCause(throwable);
+        return root.getClass().getSimpleName() + ": " + cleanMetadata(root.getMessage());
     }
 
     private boolean isRetryable(Throwable throwable) {
@@ -155,10 +179,14 @@ final class JinaWebFetchClient implements WebFetchClient {
     }
 
     private static String rootMessage(Throwable throwable) {
+        return cleanMetadata(rootCause(throwable).getMessage());
+    }
+
+    private static Throwable rootCause(Throwable throwable) {
         Throwable current = throwable;
         while (current.getCause() != null) {
             current = current.getCause();
         }
-        return cleanMetadata(current.getMessage());
+        return current;
     }
 }

@@ -72,7 +72,7 @@ final class JinaWebSearchClient implements WebSearchClient {
                     .bodyToMono(String.class)
                     .timeout(properties.timeout());
 
-            String body = blockWithRetry(response);
+            String body = blockWithRetry(response, request.query());
             List<WebSearchResult> results = parseResults(
                     body == null ? "" : body,
                     maxResults,
@@ -156,7 +156,7 @@ final class JinaWebSearchClient implements WebSearchClient {
         return Math.max(1, Math.min(180, seconds));
     }
 
-    private String blockWithRetry(Mono<String> response) {
+    private String blockWithRetry(Mono<String> response, String query) {
         WebSearchProperties.RetryProperties retry = properties.retry();
         if (!retry.isEnabled()) {
             return response.block();
@@ -165,8 +165,29 @@ final class JinaWebSearchClient implements WebSearchClient {
                         .maxBackoff(retry.maxBackoff())
                         .jitter(retry.jitter())
                         .filter(this::isRetryable)
+                        .doBeforeRetry(retrySignal -> logRetry(retrySignal.failure(),
+                                retrySignal.totalRetries() + 2,
+                                retry.maxAttempts(),
+                                query))
                         .onRetryExhaustedThrow((retryBackoffSpec, retrySignal) -> retrySignal.failure()))
                 .block();
+    }
+
+    private void logRetry(Throwable failure, long attempt, int maxAttempts, String query) {
+        log.warn("Jina provider retry operation=jina_search attempt={} maxAttempts={} reason={} query={}",
+                attempt, maxAttempts, retryReason(failure), cleanText(query));
+    }
+
+    private String retryReason(Throwable throwable) {
+        Throwable current = throwable;
+        while (current != null) {
+            if (current instanceof WebClientResponseException responseException) {
+                return "httpStatus=" + responseException.getStatusCode().value();
+            }
+            current = current.getCause();
+        }
+        Throwable root = rootCause(throwable);
+        return root.getClass().getSimpleName() + ": " + cleanText(root.getMessage());
     }
 
     private boolean isRetryable(Throwable throwable) {
@@ -208,10 +229,14 @@ final class JinaWebSearchClient implements WebSearchClient {
     }
 
     private static String rootMessage(Throwable throwable) {
+        return cleanText(rootCause(throwable).getMessage());
+    }
+
+    private static Throwable rootCause(Throwable throwable) {
         Throwable current = throwable;
         while (current.getCause() != null) {
             current = current.getCause();
         }
-        return cleanText(current.getMessage());
+        return current;
     }
 }
